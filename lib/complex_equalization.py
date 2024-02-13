@@ -744,7 +744,10 @@ class GenericTorchBlindEqualizer(object):
 
 
 class VAELinearForward(GenericTorchBlindEqualizer):
-    # Parent class for all the VAEs with linear forward model
+    """ Parent class for all the VAEs with linear forward model.
+        Implementation is heavily inspiried by the code written by Vincent Lauinger (KIT)
+        Cf. https://github.com/kit-cel/vae-equalizer
+    """
     def __init__(self, encoder_n_taps, learning_rate, constellation: np.ndarray,
                  samples_per_symbol, batch_size, dtype=torch.float32, noise_variance=1.0,
                  adaptive_noise_variance=True,
@@ -885,6 +888,9 @@ class VAELinearForward(GenericTorchBlindEqualizer):
 
 
 class LinearVAE(VAELinearForward):
+    """
+        VAE with linear channel model and linear equaliser.
+    """
     def __init__(self, encoder_n_taps, learning_rate, constellation: np.ndarray, samples_per_symbol,
                  batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), flex_update_interval=None, **decoder_kwargs) -> None:
         super().__init__(encoder_n_taps, learning_rate, constellation, samples_per_symbol,
