@@ -1,0 +1,11 @@
+torch
+torchaudio
+numpy
+scipy
+komm
+scikit-commpy
+pandas
+pyarrow
+matplotlib
+pyqt5
+seaborn

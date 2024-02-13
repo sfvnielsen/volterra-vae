@@ -6,7 +6,7 @@ from commpy.filters import rrcosfilter
 
 from lib.data_generation import generate_data_pulse_shaping_linear_isi
 from lib.real_equalization import LinearVAE, LMSPilot
-from lib.utility import calc_ser_pam
+from lib.utility import calc_ser_pam, calc_theory_ser_pam
 
 if __name__ == "__main__":
     # Parameters to be used
@@ -53,7 +53,7 @@ if __name__ == "__main__":
         h_orig,
     )
 
-    rx_val, syms_val, __, __ = generate_data_pulse_shaping_linear_isi(
+    rx_val, syms_val, __, EsN0_db = generate_data_pulse_shaping_linear_isi(
         random_obj,
         snr_db,
         modulation_scheme,
@@ -93,19 +93,15 @@ if __name__ == "__main__":
     ax.hist(rx[::samples_per_symbol_out], bins=100, label="Noisy symbols")
     ax.hist(y_eq, bins=100, label="VAE")
     ax.hist(y_eq_lms, bins=100, label="LMSPilot")
-    ax.grid()
     ax.legend()
 
     # Calculate error metrics - Symbol Error Rate (SER)
-    ser_vae, __ = calc_ser_pam(y_eq, syms_val, delay_order=5)
-    ser_lms, __ = calc_ser_pam(y_eq_lms, syms_val, delay_order=5)
-    ser_no_eq, __ = calc_ser_pam(
-        rx[::samples_per_symbol_out],
-        syms_val,
-        delay_order=5,
-    )
+    ser_vae, __ = calc_ser_pam(y_eq, syms_val)
+    ser_lms, __ = calc_ser_pam(y_eq_lms, syms_val)
+    ser_no_eq, __ = calc_ser_pam(rx[::samples_per_symbol_out], syms_val)
+    ser_theo = calc_theory_ser_pam(constellation_order=order, EsN0_db=EsN0_db)
 
-    for ser, method in zip([ser_vae, ser_lms, ser_no_eq], ["VAE", "LMS", "No eq"]):
-        print(f"{method}: {ser} (SER)")
+    for ser, method in zip([ser_vae, ser_lms, ser_no_eq, ser_theo], ["VAE", "LMS", "No eq", "Theory"]):
+        print(f"{method}: {ser:.3e} (SER)")
 
     plt.show()

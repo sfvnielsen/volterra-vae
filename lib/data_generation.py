@@ -2,8 +2,9 @@
 # Module that encompasses data generation for these digital communication systems
 import numpy as np
 import komm
-from optic.core import parameters
-from optic.dsp.core import decimate
+from .utility import symbol_sync, find_max_variance_sample
+# from optic.core import parameters
+# from optic.dsp.core import decimate, symbolSync
 
 
 # FIXME: Handle normalization of constellation in a principled way throughout the framework
@@ -66,6 +67,7 @@ def generate_data_with_pulse_shaping(random_obj: np.random.Generator, snr_db, mo
     # Apply matched filter
     rx = np.convolve(rx, pulse_shaping_filter[::-1])[sync_point:-sync_point] / pulse_energy
 
+    # TODO: Remove dependency to optic
     # Decimate if sps_in != sps_out
     if sps_in != sps_out:
         dec_pars = parameters()
@@ -117,81 +119,82 @@ def generate_data_pulse_shaping_linear_isi(random_obj: np.random.Generator, snr_
     if np.iscomplexobj(rx):
         rx += 1j * noise_std * random_obj.standard_normal(len(x))
 
-    # Apply matched filter and sync
-    # FIXME: Describe the syncing af Rx and syms here!
+    # Apply matched filter, sample recovery and decimation
     rx = np.convolve(rx, pulse_shaping_filter[::-1]) / pulse_energy
-    rx = rx[((n_extra_symbols - 1) * sps_in + sync_point):((n_extra_symbols + n_symbols - 1) * sps_in + sync_point)]
+    rx = rx[sync_point:-sync_point]
+    max_var_samp = find_max_variance_sample(rx, sps_in)
+    decimation_factor = int(sps_in / sps_out)
+    assert sps_in % sps_out == 0
+    rx = np.roll(rx, -max_var_samp)[::decimation_factor]
 
-    # Decimate if sps_in != sps_out
-    if sps_in != sps_out:
-        dec_pars = parameters()
-        dec_pars.SpS_in = sps_in
-        dec_pars.SpS_out = sps_out
-        rx = np.squeeze(decimate(rx[:, np.newaxis], dec_pars))
+    # Sync symbols
+    a = symbol_sync(rx, a, sps_out)[0:n_symbols]
+    rx = rx[0:n_symbols*sps_out]
 
     # Calculate resulting EsN0
     EsN0_db = 10.0 * np.log10(pulse_energy / noise_std ** 2)
 
-    return rx, a[n_extra_symbols:], constellation, EsN0_db
+    return rx, a, constellation, EsN0_db
 
 
 def generate_data_nonlin_simple(random_obj: np.random.Generator, snr_db, modulation_scheme: komm.Modulation,
-                                pulse_shaping_filter, n_symbols, sps_in, sps_out, non_linear_function=lambda xin: xin):
+                                pulse_shaping_filter, n_symbols, sps_in, sps_out, linear_isi, non_lin_coef):
     """ Generate data from the AWGN channel with a non-linearity after pulse shaping
         Blockdiagram:
-        bits -> symbols -> upsampling -> pulse-shaping -> apply non-linearity -> add white noise -> matched filtering -> decimation
+        bits -> symbols -> upsampling -> pulse-shaping -> apply non-linearity (isi + square) -> add white noise -> decimate
     """
-    n_bits = int(np.log2(len(modulation_scheme.constellation)) * n_symbols)
+    # FIXME: Check this function.
+
+    ps_filter_len_in_syms = len(pulse_shaping_filter) // sps_in
+    n_extra_symbols = 2 * len(linear_isi) + ps_filter_len_in_syms
+    n_bits = int(np.log2(len(modulation_scheme.constellation)) * (n_symbols + n_extra_symbols))
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
 
     constellation = modulation_scheme.constellation
     a = modulation_scheme.modulate(bit_sequence)
 
-    constellation_normalizer = np.sqrt(np.mean(np.absolute(constellation)**2))
-    constellation /= constellation_normalizer
-    a /= constellation_normalizer
-
     # Upsample symbol sequence and pulse shape
-    a_zeropadded = np.zeros(sps_in * len(a), dtype=a.dtype)
+    a_zeropadded = np.zeros(sps_in * (n_symbols + n_extra_symbols), dtype=a.dtype)
     a_zeropadded[0::sps_in] = a
     x = np.convolve(a_zeropadded, pulse_shaping_filter)
     gg = np.convolve(pulse_shaping_filter, pulse_shaping_filter[::-1])
     pulse_energy = np.max(gg)
     sync_point = np.argmax(gg)
 
-    # AWGN channel with non-linearity
-    rx = non_linear_function(x)
+    # AWGN channel with non-linearity (FIR + squaring + FIR)
+    h_isi_zeropadded = np.zeros(sps_in * (len(linear_isi) - 1) + 1, dtype=linear_isi.dtype)
+    h_isi_zeropadded[::sps_in] = linear_isi
+    h_isi_zeropadded = h_isi_zeropadded / np.linalg.norm(h_isi_zeropadded)
+    rx = np.convolve(h_isi_zeropadded, x)
+    rx = (1 - non_lin_coef) * rx + non_lin_coef * rx**2
+    rx = np.convolve(h_isi_zeropadded, rx)
 
-    # Normalize and calculate a noise level based on desired SNR (after non-linearity)
-    rx = (rx - np.mean(rx)) / np.std(rx)
-    rx_syms_noise_free = np.convolve(rx, pulse_shaping_filter[::-1])[sync_point:-sync_point:sps_in] / pulse_energy
+    # Calculate empirical energy pr. symbol period
+    Es_emp = np.mean(np.sum(np.square(np.reshape(rx[0:n_symbols * sps_in], (-1, sps_in))), axis=1))
+    
+    # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
+    base_power_pam = Es_emp * (3 / (len(constellation)**2 - 1))
 
-    noise_std = np.sqrt(1.0 / (2 * 10 ** (snr_db / 10)))
-
-    # Add white noise with at desired lvl
-    rx += noise_std * random_obj.standard_normal(len(x))
+    # Derive noise std
+    noise_std = np.sqrt(base_power_pam / 10.0 **(snr_db / 10.0))
+    #noise_std = np.sqrt(np.average(np.square(np.abs(constellation))) * pulse_energy / (2 * 10 ** (snr_db / 10)))
+    rx += noise_std * random_obj.standard_normal(len(rx))
     if np.iscomplexobj(constellation):
-        rx += 1j * noise_std * random_obj.standard_normal(len(x))
+        rx += 1j * noise_std * random_obj.standard_normal(len(rx))
 
-    # Apply matched filter
-    rx = np.convolve(rx, pulse_shaping_filter[::-1])[sync_point:-sync_point] / pulse_energy
+    # Matched filter, sample recovery and decimation
+    rx = np.convolve(rx, pulse_shaping_filter[::-1]) / pulse_energy
+    rx = rx[sync_point:-sync_point]
+    max_var_samp = find_max_variance_sample(rx, sps_in)
+    decimation_factor = int(sps_in / sps_out)
+    assert sps_in % sps_out == 0
+    rx = np.roll(rx, -max_var_samp)[::decimation_factor]
 
-    # Decimate if sps_in != sps_out
-    if sps_in != sps_out:
-        dec_pars = parameters()
-        dec_pars.SpS_in = sps_in
-        dec_pars.SpS_out = sps_out
-        rx = np.squeeze(decimate(rx[:, np.newaxis], dec_pars))
+    # Sync symbols
+    a = symbol_sync(rx, a, sps_out)[0:n_symbols]
+    rx = rx[0:n_symbols*sps_out]
 
-    # Calculate symbol energy (diff between peaks) - used for theoretical calculation of SER
-    average_symbol_energy = 0.0
-    constellation_points = np.unique(np.real(constellation))
-    for (i,j) in zip(range(0, len(constellation_points) - 1), range(1, len(constellation_points))):
-        idx_i, idx_j = np.where(np.real(a) == constellation_points[i]), np.where(np.real(a) == constellation_points[j])
-        average_symbol_energy += np.square((np.average(np.real(rx_syms_noise_free[idx_i])) - np.average(np.real(rx_syms_noise_free[idx_j]))) / 2)
-    average_symbol_energy /= len(constellation_points) - 1
-
-    symbol_snr = average_symbol_energy / (noise_std**2)
-    EsN0_db = 10.0 * np.log10(symbol_snr)
+    # Calulate pr. symbol SNR
+    EsN0_db = snr_db  # due to above adjustment EsN0_db == snr_db
 
     return rx, a, constellation, EsN0_db
