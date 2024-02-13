@@ -93,9 +93,9 @@ def generate_data_pulse_shaping_linear_isi(random_obj: np.random.Generator, snr_
     bit_sequence = random_obj.integers(0, 2, size=n_bits)
 
     constellation = modulation_scheme.constellation
-    #a = modulation_scheme.modulate(bit_sequence)
-    constellation /= np.sqrt(np.average(np.absolute(constellation)**2))
-    a = modulation_scheme.modulate(bit_sequence) / np.sqrt(np.average(np.absolute(constellation)**2))
+    a = modulation_scheme.modulate(bit_sequence)
+    #constellation /= np.sqrt(np.average(np.absolute(constellation)**2))
+    #a = modulation_scheme.modulate(bit_sequence) / np.sqrt(np.average(np.absolute(constellation)**2))
 
     # Upsample symbol sequence and pulse shape
     a_zeropadded = np.zeros(sps_in * len(a), dtype=a.dtype)

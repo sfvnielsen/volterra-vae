@@ -166,7 +166,7 @@ class VolterraPilot(object):
             self.indices_per_order.append(list(combinations_with_replacement(range(ntpo), r+1)))
         self.total_taps = int(self.total_taps)
 
-        # Assume that first order term has largest lag. Reference tap is 
+        # Assume that first order term has largest lag. Reference tap is
         if len(n_taps_pr_order) > 1:
             assert np.argmax(n_taps_pr_order) == 0
         n_taps_linear = n_taps_pr_order[0]
@@ -248,7 +248,7 @@ class VolterraPilot(object):
         receiver_signal_padded = np.concatenate((np.zeros((self.n_pad_start,), dtype=receiver_signal.dtype),
                                                  receiver_signal,
                                                  np.zeros((self.n_pad_end,), dtype=receiver_signal.dtype)))
-        
+
         for i in range(0, len(receiver_signal)):
             # Get signal slice
             sigslice = slice(i * self.samples_per_symbol, i * self.samples_per_symbol + self.max_lag)
@@ -807,8 +807,8 @@ class VAELinearForward(GenericTorchBlindEqualizer):
         # xhat is a [2, N] tensor (real imag stacked)
         # output is [2M, N] tensor, where M is the number of unique amplitude levels for the constellation
         qest = torch.empty((self.constellation_size, xhat.shape[-1]), dtype=self.dtype, device=self.torch_device)
-        xn_real = xhat[0, :] / torch.abs(xhat[0, :]).mean() * torch.mean(torch.abs(self.constellation_real))
-        xn_imag = xhat[1, :] / torch.abs(xhat[1, :]).mean() * torch.mean(torch.abs(self.constellation_imag))
+        xn_real = xhat[0, :]  # Lauinger normalizes here before, doing the demapping. Does not seem to be necessary
+        xn_imag = xhat[1, :]
         qest[0:self.constellation_size // 2, :] = torch.transpose(self.sm.forward(-(torch.outer(xn_real, torch.ones_like(self.constellation_real)) - self.constellation_real)**2 / (self.noise_variance)), 1, 0)
         qest[self.constellation_size // 2:, :] = torch.transpose(self.sm.forward(-(torch.outer(xn_imag, torch.ones_like(self.constellation_imag)) - self.constellation_imag)**2 / (self.noise_variance)), 1, 0)
         return qest

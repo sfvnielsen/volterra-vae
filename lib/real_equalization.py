@@ -1,11 +1,11 @@
+from itertools import combinations_with_replacement
+
 import numpy as np
 import numpy.typing as npt
 import torch
 import torchaudio.functional as taf
-from itertools import combinations_with_replacement
 from scipy.special import comb
-from lib.utility import calculate_mmse_weights
-from lib.filtering import FIRfilter
+
 
 class Passthrough(object):
     def __init__(self, samples_per_symbol) -> None:
@@ -268,10 +268,8 @@ class VAELinearForward(GenericTorchBlindEqualizer):
         # xhat is a [N] tensor (vector of inputs)
         # output is [M, N] tensor, where M is the number of unique amplitude levels for the constellation
         # FIXME: Implement the real soft-demapping from (Lauinger, 2022) based on Maxwell-Boltzmann distribution
-        qest = torch.empty((self.constellation_size, xhat.shape[-1]), dtype=self.dtype, device=self.torch_device)
-        # xn = xhat / torch.sqrt(torch.square(xhat).mean()) * self.constellation_scale
-        xn = xhat / torch.mean(torch.abs(xhat)) * self.constellation_amp_mean
-        qest = torch.transpose(self.sm.forward(-(torch.outer(xn, torch.ones_like(self.constellation)) - self.constellation)**2 / (self.noise_variance)), 1, 0)
+        # NB! Lauinger has a normalization step of xhat before this. Removed because it is not needed?
+        qest = torch.transpose(self.sm.forward(-(torch.outer(xhat, torch.ones_like(self.constellation)) - self.constellation)**2 / (self.noise_variance)), 1, 0)
         return qest
 
     def _calculate_loss(self, xhat, y):
@@ -359,5 +357,3 @@ class LinearVAE(VAELinearForward):
 
     def __repr__(self) -> str:
         return "LinVAE"
-
-# Volterra VAE
