@@ -128,13 +128,15 @@ class LMSPilot(Equalizer):
 class GenericTorchPilotEqualizer(object):
     """ Parent class that implements a supervised equalizer (with a pilot sequence)
     """
-    def __init__(self, samples_per_symbol, batch_size, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
+    def __init__(self, samples_per_symbol, batch_size, learning_rate, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
         # FIXME: "Flex" update scheme from (Lauinger, 2022)
         self.samples_per_symbol = samples_per_symbol
         self.batch_size = batch_size
         self.torch_device = torch_device
         self.dtype = dtype
         self.loss_print_interval = 500  # FIXME: Make part of constructor
+        self.optimizer = None
+        self.learning_rate = learning_rate
 
     def _check_input(self, input_array, syms_array):
         n_batches_input = len(input_array) // self.samples_per_symbol // self.batch_size
@@ -146,6 +148,10 @@ class GenericTorchPilotEqualizer(object):
             raise Exception(f"Number of supplied inputs batches ({n_batches_input}) does not match number symbol batches ({n_batches_syms})")
 
         return n_batches_input
+    
+    def initialize_optimizer(self):
+        self.optimizer = torch.optim.Adam(self.get_parameters(),
+                                          lr=self.learning_rate, amsgrad=True)
 
     def fit(self, y_input, tx_symbol):
         # Check input
@@ -157,6 +163,9 @@ class GenericTorchPilotEqualizer(object):
 
         # Allocate output arrays - as torch tensors
         y_eq = torch.zeros((y.shape[-1] // self.samples_per_symbol), dtype=y.dtype).to(device=self.torch_device)
+
+        # Learning rate scheduler (exponentinal decay)
+        lr_schedule = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.95)
 
         # Loop over batches
         for n in range(n_batches):
@@ -173,6 +182,8 @@ class GenericTorchPilotEqualizer(object):
                 print(f"Batch {n}, Loss: {loss.item():.3f}")
 
             self._update_model(loss)
+
+            lr_schedule.step()
 
             y_eq[n * self.batch_size: n * self.batch_size + self.batch_size] = xhat.clone().detach()
 
@@ -197,6 +208,10 @@ class GenericTorchPilotEqualizer(object):
         raise NotImplementedError
 
     # weak implementation
+    def get_parameters(self):
+        raise NotImplementedError
+
+    # weak implementation
     def print_model_parameters(self):
         raise NotImplementedError
 
@@ -216,11 +231,10 @@ class GenericTorchPilotEqualizer(object):
 class TorchLMSPilot(GenericTorchPilotEqualizer):
     """ Simple feed-forward equaliser
     """
-    def __init__(self, n_taps, reference_tap, learning_rate, samples_per_symbol,
+    def __init__(self, n_taps, learning_rate, samples_per_symbol,
                  batch_size, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
         super().__init__(samples_per_symbol, batch_size, dtype, torch_device, flex_update_interval)
 
-        self.reference_tap = reference_tap
         self.learning_rate = learning_rate
         self.equaliser = torch.nn.Conv1d(kernel_size=n_taps, in_channels=1, out_channels=1,
                                          stride=self.samples_per_symbol, bias=False, padding=(n_taps - 1) // 2,
@@ -237,6 +251,9 @@ class TorchLMSPilot(GenericTorchPilotEqualizer):
 
     def get_filter(self):
         return self.equaliser.weight.squeeze().detach().cpu().numpy()
+    
+    def get_parameters(self):
+        return self.equaliser.parameters()
 
     def _update_model(self, loss):
         loss.backward(retain_graph=True)
@@ -269,11 +286,14 @@ class SecondVolterraPilot(GenericTorchPilotEqualizer):
         # Initialize second order model
         self.equaliser = SecondOrderVolterraSeries(n_lags1=n_lags1, n_lags2=n_lags2, samples_per_symbol=samples_per_symbol,
                                                    dtype=dtype, torch_device=torch_device)
-        
+
         # Define optimizer object
         self.optimizer = torch.optim.Adam(self.equaliser.parameters(),
                                           lr=self.learning_rate, amsgrad=True)
-        
+
+    def get_parameters(self):
+        return self.equaliser.parameters()
+    
     def _update_model(self, loss):
         loss.backward()
         self.optimizer.step()
@@ -428,8 +448,9 @@ class VAELinearForward(GenericTorchBlindEqualizer):
         self.optimizer = torch.optim.Adam([{'params': self.channel_filter},
                                            {'params': self.equaliser.parameters()}],
                                           lr=self.learning_rate, amsgrad=True)
-        
+
         # Define learning rate scheduling
+        # FIXME: Not done yet?
         self.lr_schedule = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=0.9)
 
         # Define Softmax layer
