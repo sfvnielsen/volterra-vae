@@ -78,6 +78,7 @@ if __name__ == "__main__":
         torch_device=torch.device("cuda:0"),
         dtype=torch.float32
     )
+    vol2_volvo.initialize_optimizer()
     __ = vol2_volvo.fit(rx)
     y_vol2_volvo = vol2_volvo.apply(rx_val)
 
@@ -95,6 +96,7 @@ if __name__ == "__main__":
         torch_device=torch.device("cuda:0"),
         dtype=torch.float32
     )
+    vol2_vae.initialize_optimizer()
     __ = vol2_vae.fit(rx)
     y_vol2_vae = vol2_vae.apply(rx_val)
 
@@ -109,10 +111,11 @@ if __name__ == "__main__":
     #    learning_rate=1e-4,
     #    samples_per_symbol=samples_per_symbol_out,
     #)
-    mse_pilot = SecondVolterraPilot(n_lags1=num_eq_taps, n_lags2=5, learning_rate=5e-4,
+    mse_pilot = SecondVolterraPilot(n_lags1=num_eq_taps, n_lags2=num_eq_taps, learning_rate=5e-3,
                                     samples_per_symbol=samples_per_symbol_out, batch_size=400,
                                     dtype=torch.float32, 
                                     torch_device=torch.device("cuda:0"))
+    mse_pilot.initialize_optimizer()
     __ = mse_pilot.fit(rx, syms)
     y_eq_mse = mse_pilot.apply(rx_val)
 
