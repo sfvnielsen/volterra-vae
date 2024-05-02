@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from commpy.filters import rrcosfilter
 
-from lib.data_generation import generate_data_nonlin_simple, generate_data_pulse_shaping_linear_isi
+from lib.data_generation import NonLinearISI
 from lib.real_equalization import SecondVolterraVAE, LMSPilot, SecondVolterraVOLVO, SecondVolterraPilot, TorchLMSPilot
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
 
@@ -30,43 +30,34 @@ if __name__ == "__main__":
     print(f"Constellation of order {order} is: {constellation}")
     print(f"Avg. symbol energy: {symbol_energy}")
 
-    # Create pulse shape
-    sym_rate = 10e6
-    sym_length = 1 / sym_rate
-    Ts = sym_length / samples_per_symbol_in  # effective sampling interval
-    pulse_length_in_symbols = 16
-    rolloff = 0.5
-    t, g = rrcosfilter(
-        pulse_length_in_symbols * samples_per_symbol_in, rolloff, sym_length, 1 / Ts
-    )
-    g = g / np.linalg.norm(g)
+    # Create random object
+    random_obj = np.random.default_rng(12345)
 
-    # Generate data - training and validation
-    random_obj = np.random.default_rng(seed)
+    # Create data generation object
+    wh_config = {
+        "fir1": [1.0, 0.3, 0.1],
+        "fir2": [1.0, 0.3, 0.1],
+        "poly_coefs": [1.0, 0.0, 0.0]
+    }
+    psawgn = NonLinearISI(oversampling=samples_per_symbol_in,
+                          wh_config=wh_config,
+                          snr_db=snr_db,
+                          samples_pr_symbol=samples_per_symbol_out,
+                          constellation=constellation,
+                          random_obj=random_obj,
+                          rrc_length=samples_per_symbol_in * 8 - 1,
+                          rrc_rolloff=0.1)
 
-    non_lin_coef = 0.1
-    rx, syms, constellation, __ = generate_data_nonlin_simple(random_obj, snr_db, modulation_scheme,
-                                                              g, N_symbols, samples_per_symbol_in, samples_per_symbol_out,
-                                                              h_orig, non_lin_coef)
+    # Generate training data
+    rx, syms = psawgn.generate_data(N_symbols)
+    rx_val, syms_val = psawgn.generate_data(N_symbols)
+    EsN0_db = psawgn.EsN0_db
 
-    rx_val, syms_val, constellation, EsN0_db = generate_data_nonlin_simple(random_obj, snr_db, modulation_scheme,
-                                                                           g, N_symbols_val, samples_per_symbol_in, samples_per_symbol_out,
-                                                                           h_orig, non_lin_coef)
-
- 
-    """
-    rx, syms, constellation, __ = generate_data_pulse_shaping_linear_isi(random_obj, snr_db, modulation_scheme,
-                                                                         g, N_symbols, samples_per_symbol_in, samples_per_symbol_out,
-                                                                         h_orig)
-
-    rx_val, syms_val, constellation, EsN0_db = generate_data_pulse_shaping_linear_isi(random_obj, snr_db, modulation_scheme,
-                                                                                      g, N_symbols_val, samples_per_symbol_in, samples_per_symbol_out,
-                                                                                      h_orig)
-    """
 
     # Create VAE object and process samples
+    channel_memory = 15
     vol2_volvo = SecondVolterraVOLVO(
-        channel_memory=num_eq_taps,
+        channel_memory=channel_memory,
         equaliser_n_lags1=num_eq_taps,
         equaliser_n_lags2=5,
         learning_rate=5e-3,
@@ -75,7 +66,7 @@ if __name__ == "__main__":
         samples_per_symbol=samples_per_symbol_out,
         noise_variance=10 ** (-snr_db / 10),
         adaptive_noise_variance=True,
-        torch_device=torch.device("cuda:0"),
+        torch_device=torch.device("cpu"),
         dtype=torch.float32
     )
     vol2_volvo.initialize_optimizer()
@@ -84,7 +75,7 @@ if __name__ == "__main__":
 
     # Create the Linear VAE object and process
     vol2_vae = SecondVolterraVAE(
-        channel_memory=num_eq_taps,
+        channel_memory=channel_memory,
         equaliser_n_lags1=num_eq_taps,
         equaliser_n_lags2=5,
         learning_rate=5e-3,
@@ -93,7 +84,7 @@ if __name__ == "__main__":
         samples_per_symbol=samples_per_symbol_out,
         noise_variance=10 ** (-snr_db / 10),
         adaptive_noise_variance=True,
-        torch_device=torch.device("cuda:0"),
+        torch_device=torch.device("cpu"),
         dtype=torch.float32
     )
     vol2_vae.initialize_optimizer()
@@ -114,7 +105,7 @@ if __name__ == "__main__":
     mse_pilot = SecondVolterraPilot(n_lags1=num_eq_taps, n_lags2=num_eq_taps, learning_rate=5e-3,
                                     samples_per_symbol=samples_per_symbol_out, batch_size=400,
                                     dtype=torch.float32, 
-                                    torch_device=torch.device("cuda:0"))
+                                    torch_device=torch.device("cpu"))
     mse_pilot.initialize_optimizer()
     __ = mse_pilot.fit(rx, syms)
     y_eq_mse = mse_pilot.apply(rx_val)

@@ -5,10 +5,7 @@ import torch
 from commpy.filters import rrcosfilter
 
 from lib.complex_equalization import LinearVAE
-from lib.data_generation import (
-    generate_data_pulse_shaping_linear_isi,
-    generate_symbol_data_with_isi,
-)
+from lib.data_generation import SymbolAWGNwithISI
 from lib.utility import calc_brute_force_ser
 
 if __name__ == "__main__":
@@ -21,14 +18,8 @@ if __name__ == "__main__":
 
     # Artificial transfer function of the channel
     h_orig = np.array(
-        [
-            0.0545 + 1j * 0.05,
-            0.2823 - 1j * 0.11971,
-            -0.7676 + 1j * 0.2788,
-            -0.0641 - 1j * 0.0576,
-            0.0466 - 1j * 0.02275,
-        ]
-    )  # From Caciularu 2020
+        [0.0545 + 1j * 0.05, 0.2823 - 1j * 0.11971, -0.7676 + 1j * 0.2788,
+            -0.0641 - 1j * 0.0576, 0.0466 - 1j * 0.02275])  # From Caciularu 2020
 
     # Create modulation scheme
     N_symbols = int(1e6)
@@ -40,29 +31,15 @@ if __name__ == "__main__":
     print(f"Constellation of order {order} is: {constellation}")
     print(f"Avg. symbol energy: {symbol_energy}")
 
-    # Create pulse shape
-    sym_rate = 10e6
-    sym_length = 1 / sym_rate
-    Ts = sym_length / samples_per_symbol_in  # effective sampling interval
-    pulse_length_in_symbols = 32
-    rolloff = 0.1
-    t, g = rrcosfilter(
-        pulse_length_in_symbols * samples_per_symbol_in, rolloff, sym_length, 1 / Ts
-    )
-    g = g / np.linalg.norm(g)
 
     # Generate data
     random_obj = np.random.default_rng(seed)
-    rx, syms, constellation, __ = generate_data_pulse_shaping_linear_isi(
-        random_obj,
-        snr_db,
-        modulation_scheme,
-        g,
-        N_symbols,
-        samples_per_symbol_in,
-        samples_per_symbol_out,
-        h_orig,
-    )
+    symbol_awgn = SymbolAWGNwithISI(h_isi=h_orig,
+                                    snr_db=snr_db,
+                                    constellation=constellation,
+                                    random_obj=random_obj)
+    rx, syms = symbol_awgn.generate_data(N_symbols)
+    rx_val, syms_val = symbol_awgn.generate_data(N_symbols_val)
 
     # Create VAE object and process samples
     lin_vae = LinearVAE(
@@ -71,49 +48,25 @@ if __name__ == "__main__":
         learning_rate=5 * 1e-3,
         constellation=constellation,
         batch_size=400,
-        samples_per_symbol=samples_per_symbol_out,
+        samples_per_symbol=1,
         noise_variance=10 ** (-snr_db / 10),
         adaptive_noise_variance=True,
         torch_device=torch.device("cpu"),
     )
     y_eq = lin_vae.fit(rx)
-
-    # Generate validation data
-    rx_val, syms_val, __, __ = generate_data_pulse_shaping_linear_isi(
-        random_obj,
-        snr_db,
-        modulation_scheme,
-        g,
-        N_symbols_val,
-        samples_per_symbol_in,
-        samples_per_symbol_out,
-        h_orig,
-    )
     y_eq = lin_vae.apply(rx_val)
 
     # Make "constellation plot" - noisy symbol + equalized symbol
     decimation_factor = 100
     fig, ax = plt.subplots()
-    ax.plot(
-        np.real(rx_val[:: decimation_factor * samples_per_symbol_out]),
-        np.imag(rx_val[:: decimation_factor * samples_per_symbol_out]),
-        "rx",
-        label="Noisy symbols",
-    )
-    ax.plot(
-        np.real(y_eq[::decimation_factor]),
-        np.imag(y_eq[::decimation_factor]),
-        "b^",
-        label="VAE",
-    )
+    ax.plot(np.real(rx_val[:: decimation_factor]), np.imag(rx_val[:: decimation_factor]), "rx", label="Noisy symbols")
+    ax.plot(np.real(y_eq[::decimation_factor]), np.imag(y_eq[::decimation_factor]), "b^", label="VAE")
     ax.grid()
     ax.legend()
 
     # Calculate error metrics - Symbol Error Rate (SER)
     ser_vae, __, __ = calc_brute_force_ser(y_eq, syms_val, delay_order=5)
-    ser_no_eq, __, __ = calc_brute_force_ser(
-        rx_val[::samples_per_symbol_out], syms_val, delay_order=5
-    )
+    ser_no_eq, __, __ = calc_brute_force_ser(rx_val, syms_val, delay_order=5)
 
     for ser, method in zip([ser_vae, ser_no_eq], ["VAE", "No eq"]):
         print(f"{method}: {ser} (SER)")

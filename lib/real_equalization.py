@@ -169,7 +169,10 @@ class GenericTorchPilotEqualizer(object):
         y_eq = torch.zeros((y.shape[-1] // self.samples_per_symbol), dtype=y.dtype).to(device=self.torch_device)
 
         # Learning rate scheduler (step lr - learning rate is changed every step)
-        lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//10, gamma=0.9)
+        steps = 10
+        reduction = 0.1
+        gamma = np.exp(np.log(reduction) / steps)
+        lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
 
         # Loop over batches
         for n in range(n_batches):
@@ -275,6 +278,7 @@ class TorchLMSPilot(GenericTorchPilotEqualizer):
     def eval_mode(self):
         self.equaliser.eval()
 
+
 class SecondVolterraPilot(GenericTorchPilotEqualizer):
     def __init__(self, n_lags1, n_lags2, learning_rate, samples_per_symbol, batch_size, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
         super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, flex_update_interval)
@@ -356,7 +360,10 @@ class GenericTorchBlindEqualizer(object):
         y_eq = torch.zeros((y.shape[-1] // self.samples_per_symbol, ), dtype=y.dtype).to(device=self.torch_device)
 
         # Learning rate scheduler (step lr - learning rate is changed every step)
-        lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//10, gamma=0.9)
+        steps = 10
+        reduction = 0.1
+        gamma = np.exp(np.log(reduction) / steps)
+        lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
 
         # Loop over batches
         for n in range(n_batches):
