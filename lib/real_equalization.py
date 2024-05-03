@@ -7,6 +7,7 @@ import torchaudio.functional as taf
 from scipy.special import comb
 
 from .torch_components import SecondOrderVolterraSeries
+from .utility import calculate_mmse_weights
 
 
 class Passthrough(object):
@@ -21,6 +22,27 @@ class Passthrough(object):
 
     def __repr__(self) -> str:
         return "No equaliser"
+
+
+class TheoreticalMMSE(object):
+    def __init__(self, samples_per_symbol, h_isi, num_eq_taps, snr, ref_tap=None, input_delay=None):
+        # FIXME: Currently only works on 1 SpS type problems
+        assert (samples_per_symbol == 1)
+        self.ref_tap = num_eq_taps // 2 if ref_tap is None else ref_tap
+        self.input_delay = np.argmax(np.abs(h_isi)) if input_delay is None else input_delay
+        self.filter = calculate_mmse_weights(h_isi, num_eq_taps, snr, self.ref_tap, self.input_delay)
+        self.n_taps = num_eq_taps
+        self.needs_cpr = False
+
+    def fit(self, x):
+        print(f"WARNING: Calling fit on Theoretical MMSE does not update weights.")
+        return np.convolve(x, self.filter)[self.ref_tap:(self.ref_tap + len(x))]
+
+    def apply(self, x):
+        return np.convolve(x, self.filter)[self.ref_tap:(self.ref_tap + len(x))]
+
+    def __repr__(self) -> str:
+        return "Theoretical MMSE"
 
 
 class Equalizer(object):

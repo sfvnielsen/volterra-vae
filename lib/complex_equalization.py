@@ -33,10 +33,10 @@ class TheoreticalMMSE(object):
         self.needs_cpr = False
 
     def fit(self, x):
-        return np.convolve(x, self.filter)[self.n_taps // 2:(self.n_taps // 2 + len(x))]
+        return np.convolve(x, self.filter)[self.ref_tap:(self.ref_tap + len(x))]
 
     def apply(self, x):
-        return np.convolve(x, self.filter)[self.n_taps // 2:(self.n_taps // 2 + len(x))]
+        return np.convolve(x, self.filter)[self.ref_tap:(self.ref_tap + len(x))]
 
     def __repr__(self) -> str:
         return "Theoretical MMSE"

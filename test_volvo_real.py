@@ -35,9 +35,9 @@ if __name__ == "__main__":
 
     # Create data generation object
     wh_config = {
-        "fir1": [1.0, 0.3, 0.1],
-        "fir2": [1.0, 0.3, 0.1],
-        "poly_coefs": [1.0, 0.0, 0.0]
+        "fir1": h_orig,
+        "fir2": h_orig,
+        "poly_coefs": [0.9, 0.1, 0.0]
     }
     psawgn = NonLinearISI(oversampling=samples_per_symbol_in,
                           wh_config=wh_config,
@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
 
     # Create VAE object and process samples
-    channel_memory = 15
+    channel_memory = 9
     vol2_volvo = SecondVolterraVOLVO(
         channel_memory=channel_memory,
         equaliser_n_lags1=num_eq_taps,
@@ -102,7 +102,7 @@ if __name__ == "__main__":
     #    learning_rate=1e-4,
     #    samples_per_symbol=samples_per_symbol_out,
     #)
-    mse_pilot = SecondVolterraPilot(n_lags1=num_eq_taps, n_lags2=num_eq_taps, learning_rate=5e-3,
+    mse_pilot = SecondVolterraPilot(n_lags1=num_eq_taps, n_lags2=9, learning_rate=5e-3,
                                     samples_per_symbol=samples_per_symbol_out, batch_size=400,
                                     dtype=torch.float32, 
                                     torch_device=torch.device("cpu"))

@@ -35,7 +35,7 @@ class SymbolAWGNwithISI(TransmissionSystem):
     def __init__(self, h_isi, snr_db, constellation, random_obj: np.random.Generator) -> None:
         super().__init__(samples_pr_symbol=1, constellation=constellation, random_obj=random_obj)
         self.snr_db = snr_db
-        self.h_isi = h_isi
+        self.h_isi = h_isi / np.linalg.norm(h_isi)  # assert than ISI has unit norm
 
     def generate_data(self, n_symbols):
         n_symbols_conv = n_symbols + len(self.h_isi)  # extra symbols to pad with for ISI response
@@ -43,11 +43,12 @@ class SymbolAWGNwithISI(TransmissionSystem):
 
         # Construct Tx signal (simple 1 symbol pr sample) and add noise
         x = np.convolve(a, self.h_isi, mode='valid')
-        noise_std = np.sqrt(self.constellation_energy/ (2 * 10**(self.snr_db / 10)))
+        noise_std = np.sqrt(self.constellation_energy / (2 * 10**(self.snr_db / 10)))
         awgn = noise_std * self.random_obj.standard_normal(len(x))
         if np.iscomplexobj(x):
             awgn = awgn.astype(np.complex128)
             awgn += 1j * noise_std * self.random_obj.standard_normal(len(x))
+
         rx = x + awgn
         rx = rx[0:n_symbols]  # truncate to valid symbols
         a = a[(len(self.h_isi) - 1):(n_symbols + len(self.h_isi) - 1)]
@@ -57,6 +58,43 @@ class SymbolAWGNwithISI(TransmissionSystem):
 
         return rx, a
 
+
+class SymbolNonLinearISI(TransmissionSystem):
+    """
+        Symbol-level channel (1 sps) with a non-linear channel
+        Intersymbol-interference (ISI) modeled by a Wiener-Hammerstein system
+    """
+    def __init__(self, wh_config: dict, snr_db, constellation, random_obj: np.random.Generator) -> None:
+        super().__init__(samples_pr_symbol=1, constellation=constellation, random_obj=random_obj)
+        self.snr_db = snr_db
+
+        # Initailize Wiener-Hammerstein object
+        self.wh = WienerHammersteinSystem(sps=1, **wh_config)
+        self.wh_length = len(self.wh.fir1) + len(self.wh.fir2)
+
+    def generate_data(self, n_symbols):
+        n_symbols_conv = n_symbols + self.wh_length  # extra symbols to pad with for ISI response
+        a = self._generate_symbols(n_symbols_conv)
+
+        # Construct Tx signal (simple 1 symbol pr sample) and add noise
+        x = self.wh.forward(a)
+        Es = np.average(np.square(np.absolute(x)))
+        noise_std = np.sqrt(Es / (2 * 10**(self.snr_db / 10)))
+        awgn = noise_std * self.random_obj.standard_normal(len(x))
+        if np.iscomplexobj(x):
+            awgn = awgn.astype(np.complex128)
+            awgn += 1j * noise_std * self.random_obj.standard_normal(len(x))
+        rx = x + awgn
+
+        # Synchronize symbols to Rx
+        a = symbol_sync(rx, a, self.sps)[0:n_symbols]
+        rx = rx[0:n_symbols*self.sps]
+
+        # Calculate resulting EsN0
+        base_power_pam = Es * (3 / (self.constellation_order**2 - 1))
+        self.EsN0_db = 10.0 * np.log10(base_power_pam / noise_std ** 2)
+
+        return rx, a
 
 
 class PulseShapedAWGN(TransmissionSystem):
@@ -68,23 +106,23 @@ class PulseShapedAWGN(TransmissionSystem):
         Blockdiagram:
             syms -> up-sampling -> RRC -> channel (linear ISI) -> RRC -> downsampling
     """
-    def __init__(self, oversampling, h_isi, 
+    def __init__(self, oversampling, h_isi,
                        snr_db, samples_pr_symbol: int, constellation, random_obj: Generator,
                        rrc_length=255, rrc_rolloff=0.1) -> None:
         super().__init__(samples_pr_symbol=samples_pr_symbol,
                          constellation=constellation,
                          random_obj=random_obj)
-        
+
         self.oversampling = oversampling
         self.h_isi = h_isi
         self.snr_db = snr_db
-        
+
         # Generate RRC filter
         self.pulse = rrcosfilter(rrc_length + 1, rrc_rolloff, 1.0, 1.0 / oversampling)[1]
         self.pulse = self.pulse[1::]
         self.pulse /= np.linalg.norm(self.pulse)  # normalize such the pulse has unit norm
 
-        
+
     def generate_data(self, n_symbols):
         # Generate symbol sequence
         a = self._generate_symbols(n_symbols)
@@ -97,13 +135,15 @@ class PulseShapedAWGN(TransmissionSystem):
         pulse_energy = np.max(gg)
         sync_point = np.argmax(gg)
 
-        # AWGN channel
-        noise_std = np.sqrt(self.constellation_energy * pulse_energy / (2 * 10 ** (self.snr_db / 10)))
+        # Calculate empirical energy pr. symbol period
+        Es_emp = np.mean(np.sum(np.square(np.reshape((x - x.mean())[0:n_symbols * self.oversampling], (-1, self.oversampling))), axis=1))
+
+        # Derive noise std
+        noise_std = np.sqrt(Es_emp / (2 * 10.0 **(self.snr_db / 10.0)))
         rx = x + noise_std * self.random_obj.standard_normal(len(x))
         if np.iscomplexobj(self.constellation):
             rx += 1j * noise_std * self.random_obj.standard_normal(len(x))
 
-        
         # Apply matched filter, sample recovery and decimation
         rx = np.convolve(rx, self.pulse[::-1]) / pulse_energy
         rx = rx[sync_point:-sync_point]
@@ -117,7 +157,8 @@ class PulseShapedAWGN(TransmissionSystem):
         rx = rx[0:n_symbols*self.sps]
 
         # Calculate resulting EsN0
-        self.EsN0_db = 10.0 * np.log10(pulse_energy / noise_std ** 2)
+        base_power_pam = Es_emp * (3 / (self.constellation_order**2 - 1))
+        self.EsN0_db = 10.0 * np.log10(base_power_pam / noise_std ** 2)
 
         return rx, a
 
@@ -135,11 +176,12 @@ class WienerHammersteinSystem(object):
         self.fir2[::sps] = fir2
         self.poly_coefs = np.zeros((4,))
         self.poly_coefs[0:3] = poly_coefs[::-1]  # prep for np.polyval
+        self.linear_response_norm = np.linalg.norm(np.convolve(self.fir1, self.fir2))
 
     def forward(self, x):
         z = np.convolve(x, self.fir1, mode='same')
         z = np.polyval(self.poly_coefs, z)
-        return np.convolve(z, self.fir2, mode='same')
+        return np.convolve(z, self.fir2, mode='same') / self.linear_response_norm
 
 class NonLinearISI(TransmissionSystem):
     """
@@ -148,14 +190,14 @@ class NonLinearISI(TransmissionSystem):
         Blockdiagram:
             syms -> up-sampling -> RRC -> channel (WH) -> RRC -> downsampling
     """
-    def __init__(self, oversampling, wh_config: dict, 
+    def __init__(self, oversampling, wh_config: dict,
                        snr_db, samples_pr_symbol: int, constellation, random_obj: Generator,
                        rrc_length=255, rrc_rolloff=0.1) -> None:
         super().__init__(samples_pr_symbol, constellation, random_obj)
 
         self.oversampling = oversampling
         self.snr_db = snr_db
-        
+
         # Generate RRC filter
         self.pulse = rrcosfilter(rrc_length + 1, rrc_rolloff, 1.0, 1.0 / oversampling)[1]
         self.pulse = self.pulse[1::]
@@ -179,16 +221,12 @@ class NonLinearISI(TransmissionSystem):
 
         # AWGN channel with Wiener-Hammerstein non-linearity
         rx = self.wh.forward(x)
-        
+
         # Calculate empirical energy pr. symbol period
         Es_emp = np.mean(np.sum(np.square(np.reshape((rx - rx.mean())[0:n_symbols * self.oversampling], (-1, self.oversampling))), axis=1))
-        
-        # Converting average energy pr. symbol into base power (cf. https://wirelesspi.com/pulse-amplitude-modulation-pam/)
-        base_power_pam = Es_emp * (3 / (self.constellation_order**2 - 1))
 
         # Derive noise std
-        noise_std = np.sqrt(base_power_pam / 10.0 **(self.snr_db / 10.0))
-        #noise_std = np.sqrt(np.average(np.square(np.abs(constellation))) * pulse_energy / (2 * 10 ** (snr_db / 10)))
+        noise_std = np.sqrt(Es_emp / (2 * 10.0 **(self.snr_db / 10.0)))
         rx += noise_std * self.random_obj.standard_normal(len(rx))
         if np.iscomplexobj(self.constellation):
             rx += 1j * noise_std * self.random_obj.standard_normal(len(rx))
@@ -206,6 +244,7 @@ class NonLinearISI(TransmissionSystem):
         rx = rx[0:n_symbols*self.sps]
 
         # Calulate pr. symbol SNR
-        self.EsN0_db = self.snr_db  # due to above adjustment EsN0_db == snr_db
+        base_power_pam = Es_emp * (3 / (self.constellation_order**2 - 1))
+        self.EsN0_db = 10.0 * np.log10(base_power_pam / noise_std ** 2)
 
         return rx, a

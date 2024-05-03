@@ -84,7 +84,7 @@ def calc_ser(ahat, a):
 def calc_robust_ser(y_eq, a, angles=[0.0, np.pi / 2, np.pi, np.pi * 3 / 2], delay_order=30, sublength=1000, discard=10):
     # Calculates symbol error rate, robust towards uknown delay and rotational ambiguities
     assert (y_eq.shape == a.shape)
-    opt_delay = find_delay(y_eq, a, delay_order=delay_order, sublength=sublength)
+    opt_delay = find_delay(y_eq, a)
     const = np.unique(a)
     sers = np.empty((len(angles) + 1,))
     for i, ang in enumerate(angles):
