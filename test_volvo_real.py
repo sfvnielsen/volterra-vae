@@ -10,17 +10,17 @@ from lib.utility import calc_ser_pam, calc_theory_ser_pam
 
 if __name__ == "__main__":
     # Parameters to be used
-    num_eq_taps = 25
-    samples_per_symbol_in = 8
+    num_eq_taps = 15
+    samples_per_symbol_in = 4
     samples_per_symbol_out = 2
     seed = 124545
-    snr_db = 12.0
+    snr_db = 20.0
     N_symbols = int(1e6)
     N_symbols_val = int(1e6)  # number of symbols used for SER calculation
 
     # Inter-symbol-interference transfer function
-    # h_orig = np.array([0.2, 0.9, 0.3])  # From Caciularu 2020 - NB! Non-minimum phase
-    h_orig = np.array([1.0, 0.3, 0.1])  # simple minimum phase with zeros at (0.2, -0.5)
+    h_fir1 = np.array([1.0, 0.3, 0.1])  # simple minimum phase with zeros at (0.2, -0.5)
+    h_fir2 = np.array([ 1., -0.2, 0.02])  # simple minimum phase with zeros at (0.1 \pm j 0.1)
 
     # Create modulation scheme
     order = 4
@@ -35,8 +35,8 @@ if __name__ == "__main__":
 
     # Create data generation object
     wh_config = {
-        "fir1": h_orig,
-        "fir2": h_orig,
+        "fir1": h_fir1,
+        "fir2": h_fir2,
         "poly_coefs": [0.9, 0.1, 0.0]
     }
     psawgn = NonLinearISI(oversampling=samples_per_symbol_in,
