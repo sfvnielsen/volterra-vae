@@ -6,7 +6,7 @@ import torch
 import torchaudio.functional as taf
 from scipy.special import comb
 
-from .torch_components import SecondOrderVolterraSeries
+from .torch_components import SecondOrderVolterraSeries, WienerHammersteinNN
 from .utility import calculate_mmse_weights
 
 
@@ -341,6 +341,43 @@ class SecondVolterraPilot(GenericTorchPilotEqualizer):
 
     def __repr__(self) -> str:
         return f"SecondOrderVolterraPilot({len(self.equaliser.kernel1)}, {self.equaliser.kernel2.shape[0]})"
+
+
+class WienerHammersteinNNPilot(GenericTorchPilotEqualizer):
+    def __init__(self, n_lags, n_hidden_unlus, unlu_depth, unlu_hidden_size, learning_rate, samples_per_symbol, batch_size, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
+        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, flex_update_interval)
+
+        # Initialize WienerHammerStein NN
+        self.equaliser = WienerHammersteinNN(n_lags=n_lags, n_hidden_unlus=n_hidden_unlus,
+                                             unlu_depth=unlu_depth, unlu_hidden_size=unlu_hidden_size,
+                                             samples_per_symbol=samples_per_symbol,
+                                             dtype=dtype, torch_device=torch_device)
+
+    def get_parameters(self):
+        return self.equaliser.parameters()
+    
+    def _update_model(self, loss):
+        loss.backward()
+        self.optimizer.step()
+        self.equaliser.zero_grad()
+
+    def forward(self, y):
+        return self.equaliser.forward(y)
+
+    def _calculate_loss(self, xhat, y, syms):
+        return torch.mean(torch.square(xhat - syms))
+
+    def print_model_parameters(self):
+        pass
+
+    def train_mode(self):
+        self.equaliser.requires_grad_(True)
+
+    def eval_mode(self):
+        self.equaliser.requires_grad_(False)
+
+    def __repr__(self) -> str:
+        return f"WienerHammersteinNNPilot"
 
 
 class GenericTorchBlindEqualizer(object):
