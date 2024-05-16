@@ -172,8 +172,10 @@ class WienerHammersteinSystem(object):
         assert len(poly_coefs) == 3
         self.fir1 = np.zeros((sps * (len(fir1) - 1) + 1, ))  # usample FIR coefficients
         self.fir1[::sps] = fir1
+        self.fir1 /= np.linalg.norm(self.fir1)  # ensure unit norm
         self.fir2 = np.zeros((sps * (len(fir2) - 1) + 1, ))
         self.fir2[::sps] = fir2
+        self.fir2 /= np.linalg.norm(self.fir2)  # ensure unit norm
         self.poly_coefs = np.zeros((4,))
         self.poly_coefs[0:3] = poly_coefs[::-1]  # prep for np.polyval
         self.linear_response_norm = np.linalg.norm(np.convolve(self.fir1, self.fir2))
