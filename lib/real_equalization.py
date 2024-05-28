@@ -195,6 +195,7 @@ class GenericTorchPilotEqualizer(object):
         reduction = 0.1
         gamma = np.exp(np.log(reduction) / steps)
         lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
+        loss_curve = np.zeros((n_batches, ))
 
         # Loop over batches
         for n in range(n_batches):
@@ -215,8 +216,9 @@ class GenericTorchPilotEqualizer(object):
             lr_schedule.step()
 
             y_eq[n * self.batch_size: n * self.batch_size + self.batch_size] = xhat.clone().detach()
+            loss_curve[n] = loss.item()
 
-        return y_eq.detach().cpu().numpy()
+        return y_eq.detach().cpu().numpy(), loss_curve
 
     def apply(self, y_input):
         y = torch.from_numpy(y_input).type(self.dtype).to(device=self.torch_device)
@@ -423,6 +425,7 @@ class GenericTorchBlindEqualizer(object):
         reduction = 0.1
         gamma = np.exp(np.log(reduction) / steps)
         lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
+        loss_curve = np.zeros((n_batches, ))
 
         # Loop over batches
         for n in range(n_batches):
@@ -441,8 +444,9 @@ class GenericTorchBlindEqualizer(object):
             lr_schedule.step()
 
             y_eq[n * self.batch_size: n * self.batch_size + self.batch_size] = xhat.clone().detach()
+            loss_curve[n] = loss.item()
 
-        return y_eq.detach().cpu().numpy()
+        return y_eq.detach().cpu().numpy(), loss_curve
 
     def apply(self, y_input):
         y = torch.from_numpy(y_input).type(self.dtype).to(device=self.torch_device)
@@ -525,8 +529,8 @@ class VAELinearForward(GenericTorchBlindEqualizer):
         self.epsilon = 1e-12
 
     def get_parameters(self):
-        return [{'params': self.channel_filter},
-                {'params': self.equaliser.parameters()}]
+        return [{'params': self.channel_filter, 'name': 'channel_filter'},
+                {'params': self.equaliser.parameters(), 'name': 'equaliser'}]
 
     def initialize_equaliser(self, **equaliser_kwargs) -> torch.nn.Module:
         # weak implementation
@@ -688,7 +692,7 @@ class VAESecondVolterraForward(GenericTorchBlindEqualizer):
         self.adaptive_noise_variance = adaptive_noise_variance
 
         # Learning parameters
-        self.learning_rate_second_order = learning_rate / 10  # define lr of second order kernel in channel model
+        self.learning_rate_second_order = learning_rate # / 10  # define lr of second order kernel in channel model
 
         # Process constellation
         self.constellation = torch.from_numpy(constellation).type(self.dtype).to(self.torch_device)
@@ -705,9 +709,9 @@ class VAESecondVolterraForward(GenericTorchBlindEqualizer):
         self.epsilon = 1e-12
 
     def get_parameters(self):
-        return [{'params': self.channel_h1},
-                {'params': self.channel_h2, "lr": self.learning_rate_second_order},
-                {'params': self.equaliser.parameters()}]
+        return [{'params': self.channel_h1, 'name': 'channel_h1'},
+                {'params': self.channel_h2, "lr": self.learning_rate_second_order, 'name': 'channel_h2'},
+                {'params': self.equaliser.parameters(), 'name': 'equaliser'}]
 
     def initialize_equaliser(self, **equaliser_kwargs) -> torch.nn.Module:
         # weak implementation
