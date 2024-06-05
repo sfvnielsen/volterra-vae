@@ -792,7 +792,7 @@ class VAESecondVolterraForward(GenericTorchBlindEqualizer):
         ex2ex = torch.einsum('ni,nj->ij', ex2_lag, ex_lag)
         exsqex = torch.einsum('ni,nj->ij', ex_lag**2, ex_lag)
         x2x_sum = torch.sum(torch.multiply(ex2ex - exsqex,
-                                           torch.einsum('i,ji->ij', self.channel_h1, H) + torch.einsum('i,ij->ij', self.channel_h1, H) + torch.einsum('j,ii->ij', self.channel_h1, H)))
+                                           2 * torch.einsum('i,ji->ij', self.channel_h1, H) + torch.einsum('j,ii->ij', self.channel_h1, H)))
         x3_sum = torch.sum(taf.convolve(ex3 - 3 * ex2 * ex + 2*ex**3, self.channel_h1 * torch.diag(H), mode='valid'))
 
         e_xhxHx =  torch.sum(torch.einsum('ni,nj,nk->ijk', ex_lag, ex_lag, ex_lag) * torch.einsum('i,jk->ijk', self.channel_h1, H)) + x2x_sum + x3_sum
@@ -803,20 +803,20 @@ class VAESecondVolterraForward(GenericTorchBlindEqualizer):
         ex2exex = torch.einsum('ni,nj,nk->ijk', ex2_lag, ex_lag, ex_lag)
         exsqexex = torch.einsum('ni,nj,nk->ijk', ex_lag**2, ex_lag, ex_lag)
         x2xx_sum = torch.sum(torch.multiply(ex2exex - exsqexex,
-                                            torch.einsum('ii,jk->ijk', H, H) + torch.einsum('ij,ik->ijk', H, H) + torch.einsum('ij,ki->ijk', H, H) + torch.einsum('ji,ik->ijk', H, H) + torch.einsum('ji,ki->ijk', H, H) + torch.einsum('jk,ii->ijk', H, H)))
+                                            2 * torch.einsum('ii,jk->ijk', H, H) + 4 * torch.einsum('ij,ik->ijk', H, H)))
 
         ex2ex2 = torch.einsum('ni,nj->ij', ex2_lag, ex2_lag)
         ex2exsq = torch.einsum('ni,nj->ij', ex2_lag, ex_lag**2)
         exsqex2 = torch.einsum('ni,nj->ij', ex_lag**2, ex2_lag)
         exsqexsq = torch.einsum('ni,nj->ij', ex_lag**2, ex_lag**2)
         x2x2_sum = torch.sum(torch.multiply(ex2ex2 - ex2exsq - exsqex2 + exsqexsq,
-                                            torch.einsum('ij,ij->ij', H, H) + torch.einsum('ii,jj->ij', H, H) + torch.einsum('ij,ji->ij', H, H)))
+                                            2 * torch.einsum('ij,ij->ij', H, H) + torch.einsum('ii,jj->ij', H, H)))
 
         ex3ex = torch.einsum('ni,nj->ij', ex3_lag, ex_lag)
         ex2twoex = torch.einsum('ni,ni,nj->ij', ex2_lag, ex_lag, ex_lag)
         excubex = torch.einsum('ni,nj->ij', ex_lag**3, ex_lag)
         x3x_sum = torch.sum(torch.multiply(ex3ex - 3 * ex2twoex + 2 * excubex,
-                                           torch.einsum('ii,ij->ij', H, H) + torch.einsum('ii,ji->ij', H, H) + torch.einsum('ij,ii->ij', H, H) + torch.einsum('ji,ii->ij', H, H)))
+                                           4 * torch.einsum('ii,ij->ij', H, H)))
 
         x4_sum = torch.sum(taf.convolve(ex4 + 12 * ex2 * ex ** 2 - 3 * ex2 ** 2 - 4 * ex3 * ex - 6 * ex ** 4, torch.diag(H)**2, mode='valid'))
 

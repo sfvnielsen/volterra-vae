@@ -90,14 +90,15 @@ if __name__ == "__main__":
     SEQUENCE_LENGTH = 25
     KERNEL_MEMORY = 5
     NDRAWS = int(1e6)
-    seeds = np.arange(0, 10)
+    #seeds = np.arange(0, 10)
+    seeds = np.arange(10, 20)
     set_num_threads(1)  # fix to 1 for proper randomization (setting this higher results in weird random object behaviour)
 
     # Choose which distribution the input signal should follow
     x_distribution = 'bernoulli'  # supported are 'normal' or 'bernoulli'
 
     # Choose if we run with symmetric second order kernel
-    symmetric_second_order_kernel = False
+    symmetric_second_order_kernel = True
 
     # Loop over seeds - plot the distribution of the samples together with theoretical expectation
     n_trials = len(seeds)
@@ -203,7 +204,11 @@ if __name__ == "__main__":
         ex2_lag = toeplitz(ex2, np.zeros(KERNEL_MEMORY, ))[(KERNEL_MEMORY-1):]
         ex2ex = np.einsum('ni,nj->ij', ex2_lag, ex_lag)
         exsqex = np.einsum('ni,nj->ij', ex_lag**2, ex_lag)
-        x2x_sum = np.sum((ex2ex - exsqex) * (np.einsum('i,ji->ij', h, H) + np.einsum('i,ij->ij', h, H) + np.einsum('j,ii->ij', h, H)))
+        if symmetric_second_order_kernel:
+            x2x_sum = np.sum((ex2ex - exsqex) * (2 * np.einsum('i,ji->ij', h, H) + np.einsum('j,ii->ij', h, H)))
+        else:
+            x2x_sum = np.sum((ex2ex - exsqex) * (np.einsum('i,ji->ij', h, H) + np.einsum('i,ij->ij', h, H) + np.einsum('j,ii->ij', h, H)))
+        
         x3_sum = np.sum(np.convolve(ex3 - 3 * ex2 * ex + 2*ex**3, h * np.diag(H), mode='valid'))
 
         derived =  np.sum(np.einsum('ni,nj,nk->ijk', ex_lag, ex_lag, ex_lag) * np.einsum('i,jk->ijk', h, H)) + x2x_sum + x3_sum
@@ -256,22 +261,34 @@ if __name__ == "__main__":
 
         ex2exex = np.einsum('ni,nj,nk->ijk', ex2_lag, ex_lag, ex_lag)
         exsqexex = np.einsum('ni,nj,nk->ijk', ex_lag**2, ex_lag, ex_lag)
-        x2xx_sum = np.sum(np.multiply(ex2exex - exsqexex,
-                                            np.einsum('ii,jk->ijk', H, H) + np.einsum('ij,ik->ijk', H, H) + np.einsum('ij,ki->ijk', H, H) + np.einsum('ji,ik->ijk', H, H) + np.einsum('ji,ki->ijk', H, H) + np.einsum('jk,ii->ijk', H, H)))
-
+        if symmetric_second_order_kernel:
+            x2xx_sum = np.sum(np.multiply(ex2exex - exsqexex,
+                                      2 * np.einsum('ii,jk->ijk', H, H) + 4 * np.einsum('ij,ik->ijk', H, H)))
+        else:
+            x2xx_sum = np.sum(np.multiply(ex2exex - exsqexex,
+                                        np.einsum('ii,jk->ijk', H, H) + np.einsum('ij,ik->ijk', H, H) + np.einsum('ij,ki->ijk', H, H) + np.einsum('ji,ik->ijk', H, H) + np.einsum('ji,ki->ijk', H, H) + np.einsum('jk,ii->ijk', H, H)))
+            
 
         ex2ex2 = np.einsum('ni,nj->ij', ex2_lag, ex2_lag)
         ex2exsq = np.einsum('ni,nj->ij', ex2_lag, ex_lag**2)
         exsqex2 = np.einsum('ni,nj->ij', ex_lag**2, ex2_lag)
         exsqexsq = np.einsum('ni,nj->ij', ex_lag**2, ex_lag**2)
-        x2x2_sum = np.sum(np.multiply(ex2ex2 - ex2exsq - exsqex2 + exsqexsq,
-                          np.einsum('ij,ij->ij', H, H) + np.einsum('ii,jj->ij', H, H) + np.einsum('ij,ji->ij', H, H)))
-
+        if symmetric_second_order_kernel:
+            x2x2_sum = np.sum(np.multiply(ex2ex2 - ex2exsq - exsqex2 + exsqexsq,
+                              2 * np.einsum('ij,ij->ij', H, H) + np.einsum('ii,jj->ij', H, H)))
+        else:
+            x2x2_sum = np.sum(np.multiply(ex2ex2 - ex2exsq - exsqex2 + exsqexsq,
+                            np.einsum('ij,ij->ij', H, H) + np.einsum('ii,jj->ij', H, H) + np.einsum('ij,ji->ij', H, H)))
+            
         ex3ex = np.einsum('ni,nj->ij', ex3_lag, ex_lag)
         ex2twoex = np.einsum('ni,ni,nj->ij', ex2_lag, ex_lag, ex_lag)
         excubex = np.einsum('ni,nj->ij', ex_lag**3, ex_lag)
-        x3x_sum = np.sum(np.multiply(ex3ex - 3 * ex2twoex + 2 * excubex,
-                                     np.einsum('ii,ij->ij', H, H) + np.einsum('ii,ji->ij', H, H) + np.einsum('ij,ii->ij', H, H) + np.einsum('ji,ii->ij', H, H)))
+        if symmetric_second_order_kernel:
+            x3x_sum = np.sum(np.multiply(ex3ex - 3 * ex2twoex + 2 * excubex,
+                                     4 * np.einsum('ii,ij->ij', H, H)))
+        else:
+            x3x_sum = np.sum(np.multiply(ex3ex - 3 * ex2twoex + 2 * excubex,
+                                        np.einsum('ii,ij->ij', H, H) + np.einsum('ii,ji->ij', H, H) + np.einsum('ij,ii->ij', H, H) + np.einsum('ji,ii->ij', H, H)))
 
         x4_sum = np.sum(np.convolve(ex4 + 12 * ex2 * ex ** 2 - 3 * ex2 ** 2 - 4 * ex3 * ex - 6 * ex ** 4, np.diag(H)**2, mode='valid'))
 

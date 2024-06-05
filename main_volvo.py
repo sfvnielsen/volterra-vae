@@ -14,7 +14,7 @@ if __name__ == "__main__":
     samples_per_symbol_in = 4
     samples_per_symbol_out = 2
     seed = 124545
-    snr_db = 20.0
+    snr_db = 18.0
     N_symbols = int(1e6)
     N_symbols_val = int(1e6)  # number of symbols used for SER calculation
 
@@ -95,17 +95,7 @@ if __name__ == "__main__":
     y_vol2_vae = vol2_vae.apply(rx_val)
     print(f"Elapsed time: {time.time() - start_time}")
 
-    # Run LMS with pilots as a comparison
-    #mse_pilot = TorchLMSPilot(n_taps=num_eq_taps, reference_tap=num_eq_taps//2,
-    #                          learning_rate=5e-4,
-    #                          samples_per_symbol=samples_per_symbol_out, batch_size=400,
-    #                          dtype=torch.float32, 
-    #                          torch_device=torch.device("cpu"))
-    #mse_pilot = LMSPilot(
-    #    n_taps=num_eq_taps,
-    #    learning_rate=1e-4,
-    #    samples_per_symbol=samples_per_symbol_out,
-    #)
+    # Run supervised Volterra series as comparison
     mse_pilot = SecondVolterraPilot(n_lags1=num_eq_taps, n_lags2=9, learning_rate=5e-3,
                                     samples_per_symbol=samples_per_symbol_out, batch_size=400,
                                     dtype=torch.float32, 
