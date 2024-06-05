@@ -1,8 +1,8 @@
+import time
 import komm
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from commpy.filters import rrcosfilter
 
 from lib.data_generation import NonLinearISI
 from lib.real_equalization import SecondVolterraVAE, LMSPilot, SecondVolterraVOLVO, SecondVolterraPilot, TorchLMSPilot
@@ -69,9 +69,11 @@ if __name__ == "__main__":
         torch_device=torch.device("cpu"),
         dtype=torch.float32
     )
+    start_time = time.time()
     vol2_volvo.initialize_optimizer()
     __ = vol2_volvo.fit(rx)
     y_vol2_volvo = vol2_volvo.apply(rx_val)
+    print(f"Elapsed time: {time.time() - start_time}")
 
     # Create the Linear VAE object and process
     vol2_vae = SecondVolterraVAE(
@@ -87,9 +89,11 @@ if __name__ == "__main__":
         torch_device=torch.device("cpu"),
         dtype=torch.float32
     )
+    start_time = time.time()
     vol2_vae.initialize_optimizer()
     __ = vol2_vae.fit(rx)
     y_vol2_vae = vol2_vae.apply(rx_val)
+    print(f"Elapsed time: {time.time() - start_time}")
 
     # Run LMS with pilots as a comparison
     #mse_pilot = TorchLMSPilot(n_taps=num_eq_taps, reference_tap=num_eq_taps//2,
@@ -106,9 +110,11 @@ if __name__ == "__main__":
                                     samples_per_symbol=samples_per_symbol_out, batch_size=400,
                                     dtype=torch.float32, 
                                     torch_device=torch.device("cpu"))
+    start_time = time.time()
     mse_pilot.initialize_optimizer()
     __ = mse_pilot.fit(rx, syms)
     y_eq_mse = mse_pilot.apply(rx_val)
+    print(f"Elapsed time: {time.time() - start_time}")
 
     # Make "constellation plot" - noisy symbol + equalized symbol
     fig, ax = plt.subplots(ncols=2, nrows=2)
