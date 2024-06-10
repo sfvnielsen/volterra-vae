@@ -96,8 +96,8 @@ class WienerHammersteinNN(torch.nn.Module):
         self.padding = n_lags // 2
 
         # Initialize the universal nonlinear units (UNLU) - join them by a Linear layer
-        self.unlus = torch.nn.ModuleList([universal_nonlinear_unit(unlu_hidden_size, unlu_depth).to(self.torch_device) for __ in range(n_hidden_unlus)])
-        self.linear_join = Linear(in_features=n_hidden_unlus, out_features=1).to(self.torch_device)
+        self.unlus = torch.nn.ModuleList([universal_nonlinear_unit(unlu_hidden_size, unlu_depth).to(dtype).to(self.torch_device) for __ in range(n_hidden_unlus)])
+        self.linear_join = Linear(in_features=n_hidden_unlus, out_features=1).to(dtype).to(self.torch_device)
 
     def forward(self, x: torch.TensorType) -> torch.TensorType:
         # Apply first FIR
