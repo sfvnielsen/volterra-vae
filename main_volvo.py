@@ -10,13 +10,15 @@ from lib.utility import calc_ser_pam, calc_theory_ser_pam
 
 if __name__ == "__main__":
     # Parameters to be used
-    num_eq_taps = 15
     samples_per_symbol_in = 4
     samples_per_symbol_out = 2
     seed = 124545
-    snr_db = 18.0
+    snr_db = 16.0
     N_symbols = int(1e6)
     N_symbols_val = int(1e6)  # number of symbols used for SER calculation
+    eq_lags1 = 15
+    eq_lags2 = 15
+    channel_memory = 15
 
     # Inter-symbol-interference transfer function
     h_fir1 = np.array([1.0, 0.3, 0.1])  # simple minimum phase with zeros at (0.2, -0.5)
@@ -37,9 +39,11 @@ if __name__ == "__main__":
     wh_config = {
         "fir1": h_fir1,
         "fir2": h_fir2,
+        "nl_type": 'poly',
         "poly_coefs": [0.9, 0.1, 0.0]
     }
-    psawgn = NonLinearISI(oversampling=samples_per_symbol_in,
+
+    nonlinisi = NonLinearISI(oversampling=samples_per_symbol_in,
                           wh_config=wh_config,
                           snr_db=snr_db,
                           samples_pr_symbol=samples_per_symbol_out,
@@ -49,17 +53,16 @@ if __name__ == "__main__":
                           rrc_rolloff=0.1)
 
     # Generate training data
-    rx, syms = psawgn.generate_data(N_symbols)
-    rx_val, syms_val = psawgn.generate_data(N_symbols)
-    EsN0_db = psawgn.EsN0_db
+    rx, syms = nonlinisi.generate_data(N_symbols)
+    rx_val, syms_val = nonlinisi.generate_data(N_symbols)
+    EsN0_db = nonlinisi.EsN0_db
 
 
     # Create VAE object and process samples
-    channel_memory = 9
     vol2_volvo = SecondVolterraVOLVO(
         channel_memory=channel_memory,
-        equaliser_n_lags1=num_eq_taps,
-        equaliser_n_lags2=5,
+        equaliser_n_lags1=eq_lags1,
+        equaliser_n_lags2=eq_lags2,
         learning_rate=5e-3,
         constellation=constellation,
         batch_size=400,
@@ -78,8 +81,8 @@ if __name__ == "__main__":
     # Create the Linear VAE object and process
     vol2_vae = SecondVolterraVAE(
         channel_memory=channel_memory,
-        equaliser_n_lags1=num_eq_taps,
-        equaliser_n_lags2=5,
+        equaliser_n_lags1=eq_lags1,
+        equaliser_n_lags2=eq_lags2,
         learning_rate=5e-3,
         constellation=constellation,
         batch_size=400,
@@ -96,7 +99,7 @@ if __name__ == "__main__":
     print(f"Elapsed time: {time.time() - start_time}")
 
     # Run supervised Volterra series as comparison
-    mse_pilot = SecondVolterraPilot(n_lags1=num_eq_taps, n_lags2=9, learning_rate=5e-3,
+    mse_pilot = SecondVolterraPilot(n_lags1=eq_lags1, n_lags2=eq_lags2, learning_rate=5e-3,
                                     samples_per_symbol=samples_per_symbol_out, batch_size=400,
                                     dtype=torch.float32, 
                                     torch_device=torch.device("cpu"))
@@ -125,5 +128,11 @@ if __name__ == "__main__":
     for ser, method in zip([ser_volvo, ser_vae, ser_mse, ser_no_eq, ser_theory],
                            ["VOLVO", "VAE", f"{mse_pilot}", "No eq", "Theory"]):
         print(f"{method}: {ser:.4e} (SER)")
+
+    # Plot non-linearity in Wiener-Hammerstein system
+    fig, ax = plt.subplots()
+    x = np.linspace(np.min(constellation), np.max(constellation), 1000)
+    ax.plot(x, nonlinisi.wh.nl(x))
+    ax.set_title('Non-linearity in WH')
 
     plt.show()

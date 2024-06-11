@@ -2,8 +2,9 @@
 # Module that encompasses data generation for these digital communication systems
 from matplotlib.pylab import Generator
 import numpy as np
-import komm
+from scipy.interpolate import CubicSpline
 from commpy.filters import rrcosfilter
+
 from .utility import symbol_sync, find_max_variance_sample
 
 
@@ -163,27 +164,71 @@ class PulseShapedAWGN(TransmissionSystem):
         return rx, a
 
 
+class Polynomial(object):
+    def __init__(self, poly_coefs) -> None:
+        assert len(poly_coefs) == 3
+        self.poly_coefs = np.zeros((4,))
+        self.poly_coefs[0:3] = poly_coefs[::-1]  # prep for np.polyval
+
+    def __call__(self, x):
+        return np.polyval(self.poly_coefs, x)
+
+
+class SplineElectroAbsorptionModulator(object):
+    """
+        Implementation of and electro absorption modulator (EAM) as used in
+
+        E. M. Liang and J. M. Kahn,
+        “Geometric Shaping for Distortion-Limited Intensity Modulation/Direct Detection Data Center Links,”
+        IEEE Photonics Journal, vol. 15, no. 6, pp. 1–17, 2023, doi: 10.1109/JPHOT.2023.3335398.
+
+        NB! No chirp.
+    """
+
+    # Voltage-to-absorption curve directly from (Liang and Kahn, 2023)
+    ABSORPTION_KNEE_POINTS_X = np.flip(np.array([0.0, -0.5,  -1.0, -2.0, -3.0, -3.5,  -3.8]), (0,))  # driving voltage
+    ABSORPTION_KNEE_POINTS_Y = np.flip(np.array([0.0, 1.25,   2.5,  5.0,  9.5, 13.0,  12.5]), (0,))  # absorption in dB
+
+    def __init__(self, laser_power_dbm, dac_vpp, dac_vb) -> None:
+        self.Pin = 10 ** (laser_power_dbm / 10) * 1e-3  # [Watt]
+        self.alpha_db = CubicSpline(self.ABSORPTION_KNEE_POINTS_X, self.ABSORPTION_KNEE_POINTS_Y)
+        self.dac_vpp = dac_vpp
+        self.dac_vb = dac_vb
+
+    def __call__(self, x):
+        v = (x - np.min(x)) / (np.max(x) - np.min(x))
+        v = self.dac_vpp * v + self.dac_vb
+        absorp = self.alpha_db(v)
+        return self.Pin * np.float_power(10.0, -absorp / 10.0)  # ideal detection, removes sqrt
+    
+
 class WienerHammersteinSystem(object):
     """
         Wiener-Hammerstein model consists of two FIR filters with a non-linearity sandwiched in-between.
-        We use a third order polynomial as the non-linearity.
+        We use a third order polynomial as the non-linearity by default.
     """
-    def __init__(self, fir1, fir2, poly_coefs, sps) -> None:
-        assert len(poly_coefs) == 3
+    def __init__(self, fir1, fir2, sps, nl_type='poly', **nl_config) -> None:
         self.fir1 = np.zeros((sps * (len(fir1) - 1) + 1, ))  # usample FIR coefficients
         self.fir1[::sps] = fir1
         self.fir1 /= np.linalg.norm(self.fir1)  # ensure unit norm
         self.fir2 = np.zeros((sps * (len(fir2) - 1) + 1, ))
         self.fir2[::sps] = fir2
         self.fir2 /= np.linalg.norm(self.fir2)  # ensure unit norm
-        self.poly_coefs = np.zeros((4,))
-        self.poly_coefs[0:3] = poly_coefs[::-1]  # prep for np.polyval
-        self.linear_response_norm = np.linalg.norm(np.convolve(self.fir1, self.fir2))
+
+        # Determine what non-linearity that should be used in the middle
+        self.nl = lambda x: x
+        if nl_type == 'poly':
+            self.nl = Polynomial(**nl_config)
+        elif nl_type == 'eam':
+            self.nl = SplineElectroAbsorptionModulator(**nl_config)
+        else:
+            raise Exception(f"Unknown nonlinearity in WH: '{nl_type}'")
 
     def forward(self, x):
         z = np.convolve(x, self.fir1, mode='same')
-        z = np.polyval(self.poly_coefs, z)
-        return np.convolve(z, self.fir2, mode='same') / self.linear_response_norm
+        z = self.nl(z)
+        z = np.convolve(z, self.fir2, mode='same')
+        return (z - np.mean(z)) / np.std(z)
 
 class NonLinearISI(TransmissionSystem):
     """
