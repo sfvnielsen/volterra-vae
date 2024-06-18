@@ -3,6 +3,7 @@
 from matplotlib.pylab import Generator
 import numpy as np
 from scipy.interpolate import CubicSpline
+from scipy.signal import bessel, lfilter, butter, firwin
 from commpy.filters import rrcosfilter
 
 from .utility import symbol_sync, find_max_variance_sample
@@ -224,11 +225,71 @@ class WienerHammersteinSystem(object):
         else:
             raise Exception(f"Unknown nonlinearity in WH: '{nl_type}'")
 
+        # FIXME: Make correct delay estimate
+        self.delay = len(self.fir1) + len(self.fir2)
+
     def forward(self, x):
         z = np.convolve(x, self.fir1, mode='same')
         z = self.nl(z)
         z = np.convolve(z, self.fir2, mode='same')
         return (z - np.mean(z)) / np.std(z)
+
+
+
+
+class LowPassFilter(object):
+    def __init__(self, lp_type, order, cutoff) -> None:
+        self.lp_type = lp_type
+        self.order = order
+        self.cutoff = cutoff
+
+        self.lp_filter_b, self.lp_filter_a = 1, 1
+        
+        if lp_type == 'bessel':
+            self.lp_filter_b, self.lp_filter_a = bessel(order, cutoff, norm='mag')
+        elif lp_type == 'butter':
+            self.lp_filter_b, self.lp_filter_a = butter(order, cutoff)
+        elif lp_type == 'firwin':
+            self.lp_filter_b, self.lp_filter_a = firwin(order, cutoff), 1
+        else:
+            raise Exception(f"Unknown low pass filter type: '{lp_type}'")
+
+    def apply(self, x):
+        return lfilter(self.lp_filter_b, self.lp_filter_a, x)
+    
+    def __repr__(self) -> str:
+        return f"{self.lp_type}({self.order}, Wn={self.cutoff})"
+
+
+class LowPassWienerHammersteinSystem(object):
+    """
+        Wiener-Hammerstein model but with low-pass filter
+        lowpass filter can be either: bessel, butter or firwin
+        We use a third order polynomial as the non-linearity by default.
+    """
+    def __init__(self, lp1_config, lp2_config, nl_type='poly', **nl_config) -> None:
+        # Bessel filter initialization
+        self.filter1 = LowPassFilter(**lp1_config)
+        self.filter2 = LowPassFilter(**lp2_config)
+
+        # Determine what non-linearity that should be used in the middle
+        self.nl = lambda x: x
+        if nl_type == 'poly':
+            self.nl = Polynomial(**nl_config)
+        elif nl_type == 'eam':
+            self.nl = SplineElectroAbsorptionModulator(**nl_config)
+        else:
+            raise Exception(f"Unknown nonlinearity in WH: '{nl_type}'")
+
+        # FIXME: Make correct delay estimate
+        self.delay = self.filter1.order + self.filter2.order
+
+    def forward(self, x):
+        z = self.filter1.apply(x)
+        z = self.nl(z)
+        z = self.filter2.apply(z)
+        return (z - np.mean(z)) / np.std(z)
+
 
 class NonLinearISI(TransmissionSystem):
     """
@@ -239,7 +300,7 @@ class NonLinearISI(TransmissionSystem):
     """
     def __init__(self, oversampling, wh_config: dict,
                        snr_db, samples_pr_symbol: int, constellation, random_obj: Generator,
-                       rrc_length=255, rrc_rolloff=0.1) -> None:
+                       rrc_length=255, rrc_rolloff=0.1, wh_type='fir') -> None:
         super().__init__(samples_pr_symbol, constellation, random_obj)
 
         self.oversampling = oversampling
@@ -251,11 +312,17 @@ class NonLinearISI(TransmissionSystem):
         self.pulse /= np.linalg.norm(self.pulse)  # normalize such the pulse has unit norm
 
         # Initialize Wiener-Hammerstein system
-        self.wh = WienerHammersteinSystem(sps=self.oversampling, **wh_config)
+        self.wh = lambda x: x
+        if wh_type == 'fir':
+            self.wh = WienerHammersteinSystem(sps=self.oversampling, **wh_config)
+        elif wh_type == 'lp':
+            self.wh = LowPassWienerHammersteinSystem(**wh_config)
+        else:
+            raise Exception(f"Unknown WH type: '{wh_type}'")
 
     def generate_data(self, n_symbols):
         # Generate random symbols
-        n_extra_symbols = len(self.wh.fir1) + len(self.wh.fir2)
+        n_extra_symbols = self.wh.delay
         a = self._generate_symbols(n_symbols + n_extra_symbols)
 
         # Upsample symbol sequence and pulse shape

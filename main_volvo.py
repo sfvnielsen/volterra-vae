@@ -5,8 +5,9 @@ import numpy as np
 import torch
 
 from lib.data_generation import NonLinearISI
-from lib.real_equalization import SecondVolterraVAE, LMSPilot, SecondVolterraVOLVO, SecondVolterraPilot, TorchLMSPilot
+from lib.real_equalization import SecondVolterraVAE, SecondVolterraVOLVO, SecondVolterraPilot
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
+
 
 if __name__ == "__main__":
     # Parameters to be used
@@ -16,13 +17,9 @@ if __name__ == "__main__":
     snr_db = 16.0
     N_symbols = int(1e6)
     N_symbols_val = int(1e6)  # number of symbols used for SER calculation
-    eq_lags1 = 15
-    eq_lags2 = 15
+    eq_lags1 = 25
+    eq_lags2 = 25
     channel_memory = 15
-
-    # Inter-symbol-interference transfer function
-    h_fir1 = np.array([1.0, 0.3, 0.1])  # simple minimum phase with zeros at (0.2, -0.5)
-    h_fir2 = np.array([ 1., -0.2, 0.02])  # simple minimum phase with zeros at (0.1 \pm j 0.1)
 
     # Create modulation scheme
     order = 4
@@ -33,24 +30,33 @@ if __name__ == "__main__":
     print(f"Avg. symbol energy: {symbol_energy}")
 
     # Create random object
-    random_obj = np.random.default_rng(12345)
+    random_obj = np.random.default_rng(0)
 
     # Create data generation object
     wh_config = {
-        "fir1": h_fir1,
-        "fir2": h_fir2,
+        "lp1_config": {
+            "order": 5,
+            "cutoff": 0.65,
+            "lp_type": "bessel"
+        },
+        "lp2_config": {
+            "order": 5,
+            "cutoff": 0.55,
+            "lp_type": "bessel"
+        },
         "nl_type": 'poly',
         "poly_coefs": [0.9, 0.1, 0.0]
     }
 
     nonlinisi = NonLinearISI(oversampling=samples_per_symbol_in,
-                          wh_config=wh_config,
-                          snr_db=snr_db,
-                          samples_pr_symbol=samples_per_symbol_out,
-                          constellation=constellation,
-                          random_obj=random_obj,
-                          rrc_length=samples_per_symbol_in * 8 - 1,
-                          rrc_rolloff=0.1)
+                                wh_config=wh_config,
+                                wh_type='lp',
+                                snr_db=snr_db,
+                                samples_pr_symbol=samples_per_symbol_out,
+                                constellation=constellation,
+                                random_obj=random_obj,
+                                rrc_length=samples_per_symbol_in * 8 - 1,
+                                rrc_rolloff=0.1)
 
     # Generate training data
     rx, syms = nonlinisi.generate_data(N_symbols)
@@ -65,7 +71,7 @@ if __name__ == "__main__":
         equaliser_n_lags2=eq_lags2,
         learning_rate=5e-3,
         constellation=constellation,
-        batch_size=400,
+        batch_size=500,
         samples_per_symbol=samples_per_symbol_out,
         noise_variance=10 ** (-snr_db / 10),
         adaptive_noise_variance=True,
@@ -85,7 +91,7 @@ if __name__ == "__main__":
         equaliser_n_lags2=eq_lags2,
         learning_rate=5e-3,
         constellation=constellation,
-        batch_size=400,
+        batch_size=500,
         samples_per_symbol=samples_per_symbol_out,
         noise_variance=10 ** (-snr_db / 10),
         adaptive_noise_variance=True,
