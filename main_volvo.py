@@ -3,8 +3,9 @@ import komm
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from scipy.signal import freqz, group_delay
 
-from lib.data_generation import NonLinearISI
+from lib.data_generation import NonLinearISI, NonLinearISIwithIIR
 from lib.real_equalization import SecondVolterraVAE, LMSPilot, SecondVolterraVOLVO, SecondVolterraPilot, TorchLMSPilot
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
 
@@ -20,10 +21,6 @@ if __name__ == "__main__":
     eq_lags2 = 15
     channel_memory = 15
 
-    # Inter-symbol-interference transfer function
-    h_fir1 = np.array([1.0, 0.3, 0.1])  # simple minimum phase with zeros at (0.2, -0.5)
-    h_fir2 = np.array([ 1., -0.2, 0.02])  # simple minimum phase with zeros at (0.1 \pm j 0.1)
-
     # Create modulation scheme
     order = 4
     modulation_scheme = komm.PAModulation(order=order)
@@ -35,7 +32,12 @@ if __name__ == "__main__":
     # Create random object
     random_obj = np.random.default_rng(12345)
 
+    """
     # Create data generation object
+    # Inter-symbol-interference transfer function
+    h_fir1 = np.array([ 1., 0.2, -0.51, 0.098, -0.009])
+    # h_fir1 = np.array([1.0, 0.3, 0.1])  # simple minimum phase with zeros at (0.2, -0.5)
+    h_fir2 = np.array([ 1., -0.2, 0.02])  # simple minimum phase with zeros at (0.1 \pm j 0.1)
     wh_config = {
         "fir1": h_fir1,
         "fir2": h_fir2,
@@ -44,13 +46,67 @@ if __name__ == "__main__":
     }
 
     nonlinisi = NonLinearISI(oversampling=samples_per_symbol_in,
-                          wh_config=wh_config,
-                          snr_db=snr_db,
-                          samples_pr_symbol=samples_per_symbol_out,
-                          constellation=constellation,
-                          random_obj=random_obj,
-                          rrc_length=samples_per_symbol_in * 8 - 1,
-                          rrc_rolloff=0.1)
+                                    wh_config=wh_config,
+                                    snr_db=snr_db,
+                                    samples_pr_symbol=samples_per_symbol_out,
+                                    constellation=constellation,
+                                    random_obj=random_obj,
+                                    rrc_length=samples_per_symbol_in * 8 - 1,
+                                    rrc_rolloff=0.1)
+    """
+
+    # Create data generation object
+    wh_config = {
+        "bessel1_config": {
+            "order": 25,
+            "cutoff": 0.65
+        },
+        "bessel2_config": {
+            "order": 25,
+            "cutoff": 0.65
+        },
+        "nl_type": 'poly',
+        "poly_coefs": [0.9, 0.1, 0.0]
+    }
+
+    nonlinisi = NonLinearISIwithIIR(oversampling=samples_per_symbol_in,
+                                    wh_config=wh_config,
+                                    snr_db=snr_db,
+                                    samples_pr_symbol=samples_per_symbol_out,
+                                    constellation=constellation,
+                                    random_obj=random_obj,
+                                    rrc_length=samples_per_symbol_in * 8 - 1,
+                                    rrc_rolloff=0.1)
+
+
+    # Plot bessel filters
+    fig, ax = plt.subplots(ncols=2)
+    f, H = freqz(nonlinisi.wh.filter1.bessel_b, nonlinisi.wh.filter1.bessel_a)
+    ax[0].plot(f, np.absolute(H))
+    f, H = freqz(nonlinisi.wh.filter2.bessel_b, nonlinisi.wh.filter2.bessel_a)
+    ax[1].plot(f, np.absolute(H))
+    ax[0].grid()
+    ax[1].grid()
+    fig.suptitle('Amplitude response')
+
+    fig, ax = plt.subplots(ncols=2)
+    f, H = freqz(nonlinisi.wh.filter1.bessel_b, nonlinisi.wh.filter1.bessel_a)
+    ax[0].plot(f, np.unwrap(np.angle(H)))
+    f, H = freqz(nonlinisi.wh.filter2.bessel_b, nonlinisi.wh.filter2.bessel_a)
+    ax[1].plot(f, np.unwrap(np.angle(H)))
+    ax[0].grid()
+    ax[1].grid()
+    fig.suptitle('Phase response')
+
+    fig, ax = plt.subplots(ncols=2)
+    f, gd = group_delay((nonlinisi.wh.filter1.bessel_b, nonlinisi.wh.filter1.bessel_a))
+    ax[0].plot(f, gd)
+    f, gd = group_delay((nonlinisi.wh.filter2.bessel_b, nonlinisi.wh.filter2.bessel_a))
+    ax[1].plot(f, gd)
+    ax[0].grid()
+    ax[1].grid()
+    fig.suptitle('Group delay')
+
 
     # Generate training data
     rx, syms = nonlinisi.generate_data(N_symbols)

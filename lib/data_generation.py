@@ -3,6 +3,7 @@
 from matplotlib.pylab import Generator
 import numpy as np
 from scipy.interpolate import CubicSpline
+from scipy.signal import bessel, lfilter, butter, firwin
 from commpy.filters import rrcosfilter
 
 from .utility import symbol_sync, find_max_variance_sample
@@ -230,6 +231,7 @@ class WienerHammersteinSystem(object):
         z = np.convolve(z, self.fir2, mode='same')
         return (z - np.mean(z)) / np.std(z)
 
+
 class NonLinearISI(TransmissionSystem):
     """
         General non-linear channel based on a Wiener-Hammerstein (WH) model
@@ -256,6 +258,109 @@ class NonLinearISI(TransmissionSystem):
     def generate_data(self, n_symbols):
         # Generate random symbols
         n_extra_symbols = len(self.wh.fir1) + len(self.wh.fir2)
+        a = self._generate_symbols(n_symbols + n_extra_symbols)
+
+        # Upsample symbol sequence and pulse shape
+        a_zeropadded = np.zeros(self.oversampling * (n_symbols + n_extra_symbols), dtype=a.dtype)
+        a_zeropadded[0::self.oversampling] = a
+        x = np.convolve(a_zeropadded, self.pulse)
+        gg = np.convolve(self.pulse, self.pulse[::-1])
+        pulse_energy = np.max(gg)
+        sync_point = np.argmax(gg)
+
+        # AWGN channel with Wiener-Hammerstein non-linearity
+        rx = self.wh.forward(x)
+
+        # Calculate empirical energy pr. symbol period
+        Es_emp = np.mean(np.sum(np.square(np.reshape((rx - rx.mean())[0:n_symbols * self.oversampling], (-1, self.oversampling))), axis=1))
+
+        # Derive noise std
+        noise_std = np.sqrt(Es_emp / (2 * 10.0 **(self.snr_db / 10.0)))
+        rx += noise_std * self.random_obj.standard_normal(len(rx))
+        if np.iscomplexobj(self.constellation):
+            rx += 1j * noise_std * self.random_obj.standard_normal(len(rx))
+
+        # Matched filter, sample recovery and decimation
+        rx = np.convolve(rx, self.pulse[::-1]) / pulse_energy
+        rx = rx[sync_point:-sync_point]
+        max_var_samp = find_max_variance_sample(rx, self.oversampling)
+        decimation_factor = int(self.oversampling / self.sps)
+        assert self.oversampling % self.sps == 0
+        rx = np.roll(rx, -max_var_samp)[::decimation_factor]
+
+        # Sync symbols
+        a = symbol_sync(rx, a, self.sps)[0:n_symbols]
+        rx = rx[0:n_symbols*self.sps]
+
+        # Calulate pr. symbol SNR
+        base_power_pam = Es_emp * (3 / (self.constellation_order**2 - 1))
+        self.EsN0_db = 10.0 * np.log10(base_power_pam / noise_std ** 2)
+
+        return rx, a
+
+
+class BesselFilter(object):
+    def __init__(self, order, cutoff) -> None:
+        #self.bessel_b, self.bessel_a = bessel(order, cutoff, norm='mag')
+        #self.bessel_b, self.bessel_a = butter(order, cutoff)
+        self.bessel_b, self.bessel_a = firwin(order, cutoff), 1
+
+    def apply(self, x):
+        return lfilter(self.bessel_b, self.bessel_a, x)
+
+
+class BesselWienerHammersteinSystem(object):
+    """
+        Wiener-Hammerstein model but with IIR Bessel filters instead of the FIR filters
+        We use a third order polynomial as the non-linearity by default.
+    """
+    def __init__(self, bessel1_config, bessel2_config, nl_type='poly', **nl_config) -> None:
+        # Bessel filter initialization
+        self.filter1 = BesselFilter(**bessel1_config)
+        self.filter2 = BesselFilter(**bessel2_config)
+
+        # Determine what non-linearity that should be used in the middle
+        self.nl = lambda x: x
+        if nl_type == 'poly':
+            self.nl = Polynomial(**nl_config)
+        elif nl_type == 'eam':
+            self.nl = SplineElectroAbsorptionModulator(**nl_config)
+        else:
+            raise Exception(f"Unknown nonlinearity in WH: '{nl_type}'")
+
+    def forward(self, x):
+        z = self.filter1.apply(x)
+        z = self.nl(z)
+        z = self.filter2.apply(z)
+        return (z - np.mean(z)) / np.std(z)
+    
+
+class NonLinearISIwithIIR(TransmissionSystem):
+    """
+        General non-linear channel based on a Bessel-Wiener-Hammerstein (WH) model
+
+        Blockdiagram:
+            syms -> up-sampling -> RRC -> channel (WH) -> RRC -> downsampling
+    """
+    def __init__(self, oversampling, wh_config: dict,
+                       snr_db, samples_pr_symbol: int, constellation, random_obj: Generator,
+                       rrc_length=255, rrc_rolloff=0.1) -> None:
+        super().__init__(samples_pr_symbol, constellation, random_obj)
+
+        self.oversampling = oversampling
+        self.snr_db = snr_db
+
+        # Generate RRC filter
+        self.pulse = rrcosfilter(rrc_length + 1, rrc_rolloff, 1.0, 1.0 / oversampling)[1]
+        self.pulse = self.pulse[1::]
+        self.pulse /= np.linalg.norm(self.pulse)  # normalize such the pulse has unit norm
+
+        # Initialize Wiener-Hammerstein system
+        self.wh = BesselWienerHammersteinSystem(**wh_config)
+
+    def generate_data(self, n_symbols):
+        # Generate random symbols
+        n_extra_symbols = 0
         a = self._generate_symbols(n_symbols + n_extra_symbols)
 
         # Upsample symbol sequence and pulse shape
