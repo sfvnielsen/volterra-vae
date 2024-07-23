@@ -362,3 +362,90 @@ class NonLinearISI(TransmissionSystem):
         self.EsN0_db = 10.0 * np.log10(base_power_pam / noise_std ** 2)
 
         return rx, a
+
+
+class LightEmittingDiode(object):
+    """
+        LED ODE model from
+
+        G. Stepniak and J. Siuzdak, “Influence of Lighting LED Design Parameters on the Dynamic Nonlinear Response,” 
+        Journal of Lightwave Technology, vol. 40, no. 4, pp. 954–960, Feb. 2022, doi: 10.1109/JLT.2021.3129586.
+
+        Solved using numerical integration with scipy
+    """
+    def __init__(self, ) -> None:
+        pass
+
+
+class LightEmittingDiodeSystem(TransmissionSystem):
+    """
+        LED free-space simulation model
+        LED response is calculated by numerical integration of the rate equations
+
+        Blockdiagram:
+            syms -> up-sampling -> RRC -> channel (WH) -> RRC -> downsampling
+    """
+    def __init__(self, oversampling, led_config: dict,
+                    snr_db, samples_pr_symbol: int, constellation, random_obj: Generator,
+                    rrc_length=255, rrc_rolloff=0.1, wh_type='fir') -> None:
+        super().__init__(samples_pr_symbol, constellation, random_obj)
+
+        self.oversampling = oversampling
+        self.snr_db = snr_db
+
+        # Generate RRC filter
+        self.pulse = rrcosfilter(rrc_length + 1, rrc_rolloff, 1.0, 1.0 / oversampling)[1]
+        self.pulse = self.pulse[1::]
+        self.pulse /= np.linalg.norm(self.pulse)  # normalize such the pulse has unit norm
+
+        # Initialize Wiener-Hammerstein system
+        self.wh = lambda x: x
+        if wh_type == 'fir':
+            self.wh = WienerHammersteinSystem(sps=self.oversampling, **wh_config)
+        elif wh_type == 'lp':
+            self.wh = LowPassWienerHammersteinSystem(**wh_config)
+        else:
+            raise Exception(f"Unknown WH type: '{wh_type}'")
+
+    def generate_data(self, n_symbols):
+        # Generate random symbols
+        n_extra_symbols = self.wh.delay
+        a = self._generate_symbols(n_symbols + n_extra_symbols)
+
+        # Upsample symbol sequence and pulse shape
+        a_zeropadded = np.zeros(self.oversampling * (n_symbols + n_extra_symbols), dtype=a.dtype)
+        a_zeropadded[0::self.oversampling] = a
+        x = np.convolve(a_zeropadded, self.pulse)
+        gg = np.convolve(self.pulse, self.pulse[::-1])
+        pulse_energy = np.max(gg)
+        sync_point = np.argmax(gg)
+
+        # AWGN channel with Wiener-Hammerstein non-linearity
+        rx = self.wh.forward(x)
+
+        # Calculate empirical energy pr. symbol period
+        Es_emp = np.mean(np.sum(np.square(np.reshape((rx - rx.mean())[0:n_symbols * self.oversampling], (-1, self.oversampling))), axis=1))
+
+        # Derive noise std
+        noise_std = np.sqrt(Es_emp / (2 * 10.0 **(self.snr_db / 10.0)))
+        rx += noise_std * self.random_obj.standard_normal(len(rx))
+        if np.iscomplexobj(self.constellation):
+            rx += 1j * noise_std * self.random_obj.standard_normal(len(rx))
+
+        # Matched filter, sample recovery and decimation
+        rx = np.convolve(rx, self.pulse[::-1]) / pulse_energy
+        rx = rx[sync_point:-sync_point]
+        max_var_samp = find_max_variance_sample(rx, self.oversampling)
+        decimation_factor = int(self.oversampling / self.sps)
+        assert self.oversampling % self.sps == 0
+        rx = np.roll(rx, -max_var_samp)[::decimation_factor]
+
+        # Sync symbols
+        a = symbol_sync(rx, a, self.sps)[0:n_symbols]
+        rx = rx[0:n_symbols*self.sps]
+
+        # Calulate pr. symbol SNR
+        base_power_pam = Es_emp * (3 / (self.constellation_order**2 - 1))
+        self.EsN0_db = 10.0 * np.log10(base_power_pam / noise_std ** 2)
+
+        return rx, a
