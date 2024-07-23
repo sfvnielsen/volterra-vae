@@ -6,7 +6,7 @@ import torch
 
 from lib.data_generation import NonLinearISI
 from lib.real_equalization import SecondVolterraVAE, SecondVolterraVOLVO, SecondVolterraPilot
-from lib.utility import calc_ser_pam, calc_theory_ser_pam
+from lib.utility import calc_ser_pam, calc_theory_ser_pam, calc_ser_from_probs
 
 
 if __name__ == "__main__":
@@ -44,8 +44,10 @@ if __name__ == "__main__":
             "cutoff": 0.55,
             "lp_type": "bessel"
         },
-        "nl_type": 'poly',
-        "poly_coefs": [0.9, 0.1, 0.0]
+        "nl_type": 'eam',
+        "laser_power_dbm": 0.0,
+        "dac_vpp": 4.0,
+        "dac_vb": -2.0
     }
 
     nonlinisi = NonLinearISI(oversampling=samples_per_symbol_in,
@@ -81,7 +83,8 @@ if __name__ == "__main__":
     start_time = time.time()
     vol2_volvo.initialize_optimizer()
     __ = vol2_volvo.fit(rx)
-    y_vol2_volvo = vol2_volvo.apply(rx_val)
+    q_vol2_volvo = vol2_volvo.estimate_symbol_probs(rx_val)
+    y_vol2_volvo = np.sum(q_vol2_volvo * vol2_volvo.constellation.numpy()[:, None], axis=0)
     print(f"Elapsed time: {time.time() - start_time}")
 
     # Create the Linear VAE object and process
@@ -101,7 +104,8 @@ if __name__ == "__main__":
     start_time = time.time()
     vol2_vae.initialize_optimizer()
     __ = vol2_vae.fit(rx)
-    y_vol2_vae = vol2_vae.apply(rx_val)
+    q_vol2_vae = vol2_vae.estimate_symbol_probs(rx_val)
+    y_vol2_vae = np.sum(q_vol2_vae * vol2_vae.constellation.numpy()[:, None], axis=0)
     print(f"Elapsed time: {time.time() - start_time}")
 
     # Run supervised Volterra series as comparison
@@ -125,8 +129,8 @@ if __name__ == "__main__":
         this_ax.set_title(label)
 
     # Calculate error metrics - Symbol Error Rate (SER)
-    ser_volvo, __ = calc_ser_pam(y_vol2_volvo, syms_val)
-    ser_vae, __ = calc_ser_pam(y_vol2_vae, syms_val)
+    ser_volvo, __ = calc_ser_from_probs(q_vol2_volvo, syms_val, vol2_volvo.constellation.numpy())
+    ser_vae, __ = calc_ser_from_probs(q_vol2_vae, syms_val, vol2_vae.constellation.numpy())
     ser_mse, __ = calc_ser_pam(y_eq_mse, syms_val)
     ser_no_eq, __ = calc_ser_pam(rx_val[::samples_per_symbol_out], syms_val)
     ser_theory = calc_theory_ser_pam(order, EsN0_db)

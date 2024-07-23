@@ -235,8 +235,6 @@ class WienerHammersteinSystem(object):
         return (z - np.mean(z)) / np.std(z)
 
 
-
-
 class LowPassFilter(object):
     def __init__(self, lp_type, order, cutoff) -> None:
         self.lp_type = lp_type

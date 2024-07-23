@@ -57,6 +57,26 @@ def find_max_variance_sample(y, sps):
     return max_variance_sample
 
 
+def decode_from_probs(q, constellation):
+    """
+        q is a matrix of probabilities (M x N), where N is the sequence 
+        length and M is the constellation size
+        
+        return most likely symbol sequence (argmax pr. timepoint) 
+    """
+    assert q.shape[0] == len(constellation)
+    best_indices = np.argmax(q, axis=0)
+    return constellation[best_indices]
+
+
+def calc_ser_from_probs(q, a, constellation, discard=10):
+    ahat = decode_from_probs(q, constellation)
+    opt_delay = find_delay(ahat, a)
+    errors = ahat[discard:-discard] != np.roll(a, opt_delay)[discard:-discard]
+    print(f"Total number of erros {np.sum(errors)} (optimal delay: {opt_delay})")
+    return np.mean(errors), opt_delay
+
+
 def calc_ser_pam(y_eq, a, discard=10):
     assert len(y_eq) == len(a)
     opt_delay = find_delay(y_eq, a)

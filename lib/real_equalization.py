@@ -485,10 +485,27 @@ class GenericTorchBlindEqualizer(object):
     # weak implementation
     def __repr__(self) -> str:
         raise NotImplementedError
+    
+
+class GenericTorchBlindProbabilisticEqualizer(GenericTorchBlindEqualizer):
+    """
+        Same as standard blind eqalizer, but with additional methods to calculate
+        expectations and probabilistic output    
+    """
+
+    def estimate_symbol_probs(self, y_input):
+        y = torch.from_numpy(y_input).type(self.dtype).to(device=self.torch_device)
+        with torch.set_grad_enabled(False):
+            q_eq = self.forward_probs(y)
+        return q_eq.cpu().numpy()
+    
+    # weak implementation
+    def forward_probs(self, y_in):
+        raise NotImplementedError
 
 
 # Linear VAE
-class VAELinearForward(GenericTorchBlindEqualizer):
+class VAELinearForward(GenericTorchBlindProbabilisticEqualizer):
     """
         Parent class for all the blind-equalizer VAEs with linear channel model
     """
@@ -539,6 +556,10 @@ class VAELinearForward(GenericTorchBlindEqualizer):
     def forward(self, y) -> torch.TensorType:
         # weak implementation
         raise NotImplementedError
+    
+    def forward_probs(self, y_in):
+        y = self.forward(y_in)
+        return self._soft_demapping(y)
 
     def _soft_demapping(self, xhat):
         # Produce softmax outputs from equalised signal
@@ -554,7 +575,6 @@ class VAELinearForward(GenericTorchBlindEqualizer):
         end_delay = -(self.channel_n_taps - 1) // 2
 
         # Do soft-demapping on equalised signal
-        # FIXME: How to handle models that output q-est directly?
         qest = self._soft_demapping(xhat)
 
         # KL Divergence term
@@ -659,7 +679,7 @@ class SecondVolterraVAE(VAELinearForward):
         return "SecondVolterraVOLVO"
 
 
-class VAESecondVolterraForward(GenericTorchBlindEqualizer):
+class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
     """
         Parent class for all the blind-equalizer VAEs with a Volterra channel model of order 2
     """
@@ -698,6 +718,10 @@ class VAESecondVolterraForward(GenericTorchBlindEqualizer):
         self.constellation = torch.from_numpy(constellation).type(self.dtype).to(self.torch_device)
         self.constellation_size = len(self.constellation)
 
+        # Define noise scaling pr. symbol
+        self.noise_scaling = torch.ones_like(self.constellation)
+        self.noise_scaling.requires_grad = True
+
         # Define constellation prior
         # FIXME: Currently uniform - change in accordance to (Lauinger, 2022) (PCS)
         self.constellation_prior = torch.ones((self.constellation_size,), dtype=self.dtype, device=self.torch_device) / self.constellation_size
@@ -711,7 +735,8 @@ class VAESecondVolterraForward(GenericTorchBlindEqualizer):
     def get_parameters(self):
         return [{'params': self.channel_h1, 'name': 'channel_h1'},
                 {'params': self.channel_h2, "lr": self.learning_rate_second_order, 'name': 'channel_h2'},
-                {'params': self.equaliser.parameters(), 'name': 'equaliser'}]
+                {'params': self.equaliser.parameters(), 'name': 'equaliser'},
+                {'params': self.noise_scaling, 'name': 'noise_scale'}]
 
     def initialize_equaliser(self, **equaliser_kwargs) -> torch.nn.Module:
         # weak implementation
@@ -720,6 +745,10 @@ class VAESecondVolterraForward(GenericTorchBlindEqualizer):
     def forward(self, y) -> torch.TensorType:
         # weak implementation
         raise NotImplementedError
+    
+    def forward_probs(self, y_in):
+        y = self.forward(y_in)
+        return self._soft_demapping(y)
 
     def _soft_demapping(self, xhat):
         # Produce softmax outputs from equalised signal
@@ -727,7 +756,7 @@ class VAESecondVolterraForward(GenericTorchBlindEqualizer):
         # output is [M, N] tensor, where M is the number of unique amplitude levels for the constellation
         # FIXME: Implement the real soft-demapping from (Lauinger, 2022) based on Maxwell-Boltzmann distribution
         # NB! Lauinger has a normalization step of xhat before this. Removed because it is not needed?
-        qest = torch.transpose(self.sm.forward(-(torch.outer(xhat, torch.ones_like(self.constellation)) - self.constellation)**2 / (self.noise_variance)), 1, 0)
+        qest = torch.transpose(self.sm.forward(-(torch.outer(xhat, torch.ones_like(self.constellation)) - self.constellation)**2 / (self.noise_variance * self.noise_scaling)), 1, 0)
         return qest
 
     def _unfold_and_flip(self, input_seq: torch.TensorType):
@@ -749,7 +778,6 @@ class VAESecondVolterraForward(GenericTorchBlindEqualizer):
         H = self.channel_h2 + self.channel_h2.T
 
         # Do soft-demapping on equalised signal
-        # FIXME: How to handle models that output q-est directly?
         qest = self._soft_demapping(xhat)
 
         # KL Divergence term

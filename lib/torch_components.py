@@ -10,6 +10,25 @@ import torch.nn.functional as F
 from torch.nn import Linear, ReLU, Sequential, BatchNorm1d, Dropout
 
 
+class FIRfilter(torch.nn.Module):
+    def __init__(self, filter_length, stride=1, trainable=True, dtype=torch.float64, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        filter_weights = np.zeros((filter_length, ))
+        filter_weights[filter_length // 2] = 1.0
+        torch_filter = torch.from_numpy(np.copy(filter_weights)).to(dtype)
+        self.filter_length = len(filter_weights)
+        self.padding = ((self.filter_length - 1) // 2, (self.filter_length - self.filter_length % 2) // 2)
+        self.weights = torch.nn.Parameter(torch_filter, requires_grad=trainable)
+        self.trainalbe = trainable
+        self.stride = stride
+
+    def forward(self, x):
+        # input x assumed to be [timesteps,]
+        xpadded = F.pad(x, self.padding, mode='constant', value=0.0)[None, None, :]
+        f_out = F.conv1d(xpadded, torch.flip(self.weights, (0,))[None, None, :],
+                        stride=self.stride).squeeze_()
+        return f_out
+
 class SecondOrderVolterraSeries(torch.nn.Module):
     """
         Vanilla second order Volterra-series implemented in torch using einsum
