@@ -362,3 +362,128 @@ class NonLinearISI(TransmissionSystem):
         self.EsN0_db = 10.0 * np.log10(base_power_pam / noise_std ** 2)
 
         return rx, a
+
+
+class LightEmittingDiode(object):
+    """
+        LED ODE model from
+
+        [1] X. Deng et al., “Mitigating LED Nonlinearity to Enhance Visible Light Communications,” IEEE Transactions on Communications, vol. 66, no. 11, pp. 5593–5607, Nov. 2018, doi: 10.1109/TCOMM.2018.2858239.
+
+        Solved by applying Eulers method
+    """
+    def __init__(self, optical_wavelength, active_layer_thickness,
+                 active_layer_area, Anr, Br, Cnr, doping_concentration) -> None:
+        # Populate important attributes
+        self.optical_wavelength = optical_wavelength  # assumed to be in [nm]
+        optical_frequency = 3e8 / (self.optical_wavelength * 1e-9)
+
+        # Physical constants
+        self.electron_charge = 1.6e-19
+        self.planck_constant = 6.626e-34  # [J/Hz]
+
+        # Derived constants following notation in [1]
+        self.energy_pr_photon = self.planck_constant * optical_frequency  # [J]
+        self.a0 = 1 / (self.electron_charge * active_layer_thickness * active_layer_area)
+        self.a1 = Br * doping_concentration + Anr
+        self.a2 = Br
+        self.a3 = Cnr
+        self.a4 = self.energy_pr_photon * active_layer_area * active_layer_thickness * Br * doping_concentration
+        self.a5 = self.energy_pr_photon * active_layer_area * active_layer_thickness * Br
+    
+    def forward(self, current, fs):
+        # Find time interval to solve the ode in
+        ts = 1/fs
+
+        # Apply Eulers method, i.e.  n_c(t+1) \approx n_c(t) + Ts * dn_c(t) / dt
+        nc_sol = np.zeros_like(current)
+        current_copy = np.copy(current)
+        nc_sol[0] = current_copy[0]  # initial condition
+        for i in range(1, len(current)):
+            nc_sol[i] = ts * current_copy[i] * self.a0 + (1 - self.a1 * ts) * nc_sol[i-1]\
+                - self.a2 * ts * nc_sol[i-1]**2 - self.a3 * ts * nc_sol[i-1]**3 
+        
+        # Compute optical power
+        return self.a4 * nc_sol + self.a5 * nc_sol**2
+
+
+class LightEmittingDiodeSystem(TransmissionSystem):
+    """
+        LED free-space simulation model
+        LED response is calculated by numerical integration of the rate equations
+
+        Blockdiagram:
+            syms -> up-sampling -> RRC -> LED -> Photodiode (square + AWGN) -> RRC -> downsampling/alignment
+    """
+    def __init__(self, baud_rate, oversampling, led_config: dict, current_pp: float,
+                 snr_db, samples_pr_symbol: int, constellation, random_obj: Generator,
+                 rrc_length=255, rrc_rolloff=0.1, current_bias: float=0.0) -> None:
+        super().__init__(samples_pr_symbol, constellation, random_obj)
+
+        self.baud_rate = baud_rate
+        self.oversampling = oversampling
+        self.snr_db = snr_db
+        self.fs = baud_rate * oversampling
+        self.current_pp = current_pp
+        self.current_bias = current_bias
+
+        # Generate RRC filter
+        self.pulse = rrcosfilter(rrc_length + 1, rrc_rolloff, 1 / baud_rate, self.fs)[1]
+        self.pulse = self.pulse[1::]
+        self.pulse /= np.linalg.norm(self.pulse)  # normalize such the pulse has unit norm
+
+        # Initialize LED
+        self.led = LightEmittingDiode(**led_config)
+        
+
+    def generate_data(self, n_symbols):
+        # Generate random symbols
+        n_extra_symbols = 0
+        a = self._generate_symbols(n_symbols + n_extra_symbols)
+
+        # Upsample symbol sequence and pulse shape
+        a_zeropadded = np.zeros(self.oversampling * (n_symbols + n_extra_symbols), dtype=a.dtype)
+        a_zeropadded[0::self.oversampling] = a
+        x = np.convolve(a_zeropadded, self.pulse)
+        gg = np.convolve(self.pulse, self.pulse[::-1])
+        pulse_energy = np.max(gg)
+        sync_point = np.argmax(gg)
+
+        # Conver to a current - normalize digital signal to [-1, 1] and apply transform (1 + x) * current_dc
+        x = (x / np.max(np.abs(x)) + 1) * self.current_pp + self.current_bias
+
+        # Apply LED model
+        yled = self.led.forward(x, self.fs)
+
+        # Photoiode (square-law + AWGN)
+        rx = np.square(yled)
+
+        # Calculate empirical energy pr. symbol period
+        Es_emp = np.mean(np.sum(np.square(np.reshape((rx - rx.mean())[0:n_symbols * self.oversampling], (-1, self.oversampling))), axis=1))
+
+        # Derive noise std
+        noise_std = np.sqrt(Es_emp / (2 * 10.0 **(self.snr_db / 10.0)))
+        rx += noise_std * self.random_obj.standard_normal(len(rx))
+        if np.iscomplexobj(self.constellation):
+            rx += 1j * noise_std * self.random_obj.standard_normal(len(rx))
+
+        # Normalize
+        rx = (rx - np.mean(rx)) / np.std(rx)
+
+        # Matched filter, sample recovery and decimation
+        rx = np.convolve(rx, self.pulse[::-1]) / pulse_energy
+        rx = rx[sync_point:-sync_point]
+        max_var_samp = find_max_variance_sample(rx, self.oversampling)
+        decimation_factor = int(self.oversampling / self.sps)
+        assert self.oversampling % self.sps == 0
+        rx = np.roll(rx, -max_var_samp)[::decimation_factor]
+
+        # Sync symbols
+        a = symbol_sync(rx, a, self.sps)[0:n_symbols]
+        rx = rx[0:n_symbols*self.sps]
+
+        # Calulate pr. symbol SNR
+        base_power_pam = Es_emp * (3 / (self.constellation_order**2 - 1))
+        self.EsN0_db = 10.0 * np.log10(base_power_pam / noise_std ** 2)
+
+        return rx, a
