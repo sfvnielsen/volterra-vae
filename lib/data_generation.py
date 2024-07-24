@@ -368,13 +368,43 @@ class LightEmittingDiode(object):
     """
         LED ODE model from
 
-        G. Stepniak and J. Siuzdak, “Influence of Lighting LED Design Parameters on the Dynamic Nonlinear Response,” 
-        Journal of Lightwave Technology, vol. 40, no. 4, pp. 954–960, Feb. 2022, doi: 10.1109/JLT.2021.3129586.
+        [1] X. Deng et al., “Mitigating LED Nonlinearity to Enhance Visible Light Communications,” IEEE Transactions on Communications, vol. 66, no. 11, pp. 5593–5607, Nov. 2018, doi: 10.1109/TCOMM.2018.2858239.
 
-        Solved using numerical integration with scipy
+        Solved by applying Eulers method
     """
-    def __init__(self, ) -> None:
-        pass
+    def __init__(self, optical_wavelength, active_layer_thickness,
+                 active_layer_area, Anr, Br, Cnr, doping_concentration) -> None:
+        # Populate important attributes
+        self.optical_wavelength = optical_wavelength  # assumed to be in [nm]
+        optical_frequency = 3e8 / (self.optical_wavelength * 1e-9)
+
+        # Physical constants
+        self.electron_charge = 1.6e-19
+        self.planck_constant = 6.626e-34  # [J/Hz]
+
+        # Derived constants following notation in [1]
+        self.energy_pr_photon = self.planck_constant * optical_frequency  # [J]
+        self.a0 = 1 / (self.electron_charge * active_layer_thickness * active_layer_area)
+        self.a1 = Br * doping_concentration + Anr
+        self.a2 = Br
+        self.a3 = Cnr
+        self.a4 = self.energy_pr_photon * active_layer_area * active_layer_thickness * Br * doping_concentration
+        self.a5 = self.energy_pr_photon * active_layer_area * active_layer_thickness * Br
+    
+    def forward(self, current, fs):
+        # Find time interval to solve the ode in
+        ts = 1/fs
+
+        # Apply Eulers method, i.e.  n_c(t+1) \approx n_c(t) + Ts * dn_c(t) / dt
+        nc_sol = np.zeros_like(current)
+        current_copy = np.copy(current)
+        nc_sol[0] = current_copy[0]  # initial condition
+        for i in range(1, len(current)):
+            nc_sol[i] = ts * current_copy[i] * self.a0 + (1 - self.a1 * ts) * nc_sol[i-1]\
+                - self.a2 * ts * nc_sol[i-1]**2 - self.a3 * ts * nc_sol[i-1]**3 
+        
+        # Compute optical power
+        return self.a4 * nc_sol + self.a5 * nc_sol**2
 
 
 class LightEmittingDiodeSystem(TransmissionSystem):
@@ -383,33 +413,31 @@ class LightEmittingDiodeSystem(TransmissionSystem):
         LED response is calculated by numerical integration of the rate equations
 
         Blockdiagram:
-            syms -> up-sampling -> RRC -> channel (WH) -> RRC -> downsampling
+            syms -> up-sampling -> RRC -> LED -> Photodiode -> RRC -> downsampling/alignment?
     """
-    def __init__(self, oversampling, led_config: dict,
-                    snr_db, samples_pr_symbol: int, constellation, random_obj: Generator,
-                    rrc_length=255, rrc_rolloff=0.1, wh_type='fir') -> None:
+    def __init__(self, baud_rate, oversampling, led_config: dict, dc_current: float,
+                 snr_db, samples_pr_symbol: int, constellation, random_obj: Generator,
+                 rrc_length=255, rrc_rolloff=0.1) -> None:
         super().__init__(samples_pr_symbol, constellation, random_obj)
 
+        self.baud_rate = baud_rate
         self.oversampling = oversampling
         self.snr_db = snr_db
+        self.fs = baud_rate * oversampling
+        self.dc_current = dc_current
 
         # Generate RRC filter
-        self.pulse = rrcosfilter(rrc_length + 1, rrc_rolloff, 1.0, 1.0 / oversampling)[1]
+        self.pulse = rrcosfilter(rrc_length + 1, rrc_rolloff, 1 / baud_rate, self.fs)[1]
         self.pulse = self.pulse[1::]
         self.pulse /= np.linalg.norm(self.pulse)  # normalize such the pulse has unit norm
 
-        # Initialize Wiener-Hammerstein system
-        self.wh = lambda x: x
-        if wh_type == 'fir':
-            self.wh = WienerHammersteinSystem(sps=self.oversampling, **wh_config)
-        elif wh_type == 'lp':
-            self.wh = LowPassWienerHammersteinSystem(**wh_config)
-        else:
-            raise Exception(f"Unknown WH type: '{wh_type}'")
+        # Initialize LED
+        self.led = LightEmittingDiode(**led_config)
+        
 
     def generate_data(self, n_symbols):
         # Generate random symbols
-        n_extra_symbols = self.wh.delay
+        n_extra_symbols = 0
         a = self._generate_symbols(n_symbols + n_extra_symbols)
 
         # Upsample symbol sequence and pulse shape
@@ -420,8 +448,14 @@ class LightEmittingDiodeSystem(TransmissionSystem):
         pulse_energy = np.max(gg)
         sync_point = np.argmax(gg)
 
-        # AWGN channel with Wiener-Hammerstein non-linearity
-        rx = self.wh.forward(x)
+        # Conver to a current - normalize digital signal to [-1, 1] and apply transform (1 + x) * current_dc
+        x = (x / np.max(np.abs(x)) + 1) * self.dc_current
+
+        # Apply LED model
+        yled = self.led.forward(x, self.fs)
+
+        # Photoiode (square-law + AWGN)
+        rx = np.square(yled)
 
         # Calculate empirical energy pr. symbol period
         Es_emp = np.mean(np.sum(np.square(np.reshape((rx - rx.mean())[0:n_symbols * self.oversampling], (-1, self.oversampling))), axis=1))
@@ -431,6 +465,9 @@ class LightEmittingDiodeSystem(TransmissionSystem):
         rx += noise_std * self.random_obj.standard_normal(len(rx))
         if np.iscomplexobj(self.constellation):
             rx += 1j * noise_std * self.random_obj.standard_normal(len(rx))
+
+        # Normalize
+        rx = (rx - np.mean(rx)) / np.std(rx)
 
         # Matched filter, sample recovery and decimation
         rx = np.convolve(rx, self.pulse[::-1]) / pulse_energy
