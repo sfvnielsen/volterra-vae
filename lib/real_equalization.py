@@ -681,7 +681,7 @@ class SecondVolterraVAE(VAELinearForward):
         return y_eq
 
     def __repr__(self) -> str:
-        return "SecondVolterraVOLVO"
+        return "SecondVolterraVAE"
 
 
 class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
