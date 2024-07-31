@@ -150,6 +150,8 @@ class LMSPilot(Equalizer):
 class GenericTorchPilotEqualizer(object):
     """ Parent class that implements a supervised equalizer (with a pilot sequence)
     """
+    IS_PROBABILISTIC = False
+
     def __init__(self, samples_per_symbol, batch_size, learning_rate, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
         # FIXME: "Flex" update scheme from (Lauinger, 2022)
         self.samples_per_symbol = samples_per_symbol
@@ -386,6 +388,8 @@ class GenericTorchBlindEqualizer(object):
     """
         Parent class for blind-equalizers with torch optimization
     """
+    IS_PROBABILISTIC = False
+
     def __init__(self, samples_per_symbol, batch_size, learning_rate, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
         # FIXME: "Flex" update scheme from (Lauinger, 2022)
         self.samples_per_symbol = samples_per_symbol
@@ -492,6 +496,7 @@ class GenericTorchBlindProbabilisticEqualizer(GenericTorchBlindEqualizer):
         Same as standard blind eqalizer, but with additional methods to calculate
         expectations and probabilistic output    
     """
+    IS_PROBABILISTIC = True
 
     def estimate_symbol_probs(self, y_input):
         y = torch.from_numpy(y_input).type(self.dtype).to(device=self.torch_device)

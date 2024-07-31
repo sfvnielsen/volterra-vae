@@ -80,6 +80,7 @@ if __name__ == "__main__":
         torch_device=torch.device("cpu"),
         dtype=torch.float32
     )
+    print(f"{vol2_volvo} is probabilistic: {vol2_volvo.IS_PROBABILISTIC}")
     start_time = time.time()
     vol2_volvo.initialize_optimizer()
     __ = vol2_volvo.fit(rx)
@@ -101,6 +102,7 @@ if __name__ == "__main__":
         torch_device=torch.device("cpu"),
         dtype=torch.float32
     )
+    print(f"{vol2_vae} is probabilistic: {vol2_vae.IS_PROBABILISTIC}")
     start_time = time.time()
     vol2_vae.initialize_optimizer()
     __ = vol2_vae.fit(rx)
@@ -113,6 +115,7 @@ if __name__ == "__main__":
                                     samples_per_symbol=samples_per_symbol_out, batch_size=400,
                                     dtype=torch.float32, 
                                     torch_device=torch.device("cpu"))
+    print(f"{mse_pilot} is probabilistic: {mse_pilot.IS_PROBABILISTIC}")
     start_time = time.time()
     mse_pilot.initialize_optimizer()
     __ = mse_pilot.fit(rx, syms)
