@@ -289,6 +289,26 @@ class LowPassWienerHammersteinSystem(object):
         return (z - np.mean(z)) / np.std(z)
 
 
+class TimeVaryingWienerHammersteinSystem(WienerHammersteinSystem):
+    """
+        Wiener-Hammerstein model consists of two FIR filters with a non-linearity sandwiched in-between.
+        We use a third order polynomial as the non-linearity by default.
+        The first FIR filter can be modified/switched out to another one to simulate
+        instant changes to the system
+    """
+    def __init__(self, fir1, fir1_alt, fir2, sps, nl_type='poly', **nl_config) -> None:
+        super().__init__(fir1, fir2, sps, nl_type, **nl_config)
+        # Define alternative FIR filter to switch when changepoint method (modify wh) is called
+        self.fir1_alt = np.zeros((sps * (len(fir1_alt) - 1) + 1, ))  # usample FIR coefficients
+        self.fir1_alt[::sps] = fir1_alt
+        self.fir1_alt /= np.linalg.norm(self.fir1_alt)  # ensure unit norm
+
+    def modify_wh(self):
+        current_fir_copy = np.copy(self.fir1)
+        self.fir1 = np.copy(self.fir1_alt)
+        self.fir1_alt = current_fir_copy
+
+
 class NonLinearISI(TransmissionSystem):
     """
         General non-linear channel based on a Wiener-Hammerstein (WH) model
@@ -315,6 +335,8 @@ class NonLinearISI(TransmissionSystem):
             self.wh = WienerHammersteinSystem(sps=self.oversampling, **wh_config)
         elif wh_type == 'lp':
             self.wh = LowPassWienerHammersteinSystem(**wh_config)
+        elif wh_type == 'time_varying':
+            self.wh = TimeVaryingWienerHammersteinSystem(sps=self.oversampling, **wh_config)
         else:
             raise Exception(f"Unknown WH type: '{wh_type}'")
 
@@ -361,6 +383,23 @@ class NonLinearISI(TransmissionSystem):
 
         return rx, a
 
+class TimeVaryingNonLinearISI(NonLinearISI):
+    """
+        General non-linear channel based on a Wiener-Hammerstein (WH) model
+        with a time-varying FIR filter. FIR filter in WH model is changed
+        at a certain interval between successive calls to generate data
+
+        Blockdiagram:
+            syms -> up-sampling -> RRC -> channel (WH) -> RRC -> downsampling
+    """
+    def __init__(self, oversampling, wh_config: dict, snr_db, samples_pr_symbol: int, constellation,
+                 random_obj: Generator, rrc_length=255, rrc_rolloff=0.1) -> None:
+        super().__init__(oversampling, wh_config, snr_db, samples_pr_symbol, constellation,
+                         random_obj, rrc_length, rrc_rolloff, wh_type='time_varying')
+
+    def change_wh(self):
+        self.wh.modify_wh()
+
 
 class LightEmittingDiode(object):
     """
@@ -391,6 +430,7 @@ class LightEmittingDiode(object):
     
     def forward(self, current, fs):
         # Find time interval to solve the ode in
+        # FIXME: ts should small (ns according to paper [1]). So it should not depend on the fs
         ts = 1/fs
 
         # Apply Eulers method, i.e.  n_c(t+1) \approx n_c(t) + Ts * dn_c(t) / dt

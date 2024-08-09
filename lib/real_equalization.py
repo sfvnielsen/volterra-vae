@@ -152,15 +152,16 @@ class GenericTorchPilotEqualizer(object):
     """
     IS_PROBABILISTIC = False
 
-    def __init__(self, samples_per_symbol, batch_size, learning_rate, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
-        # FIXME: "Flex" update scheme from (Lauinger, 2022)
+    def __init__(self, samples_per_symbol, batch_size, learning_rate, dtype=torch.float32, torch_device=torch.device("cpu"),
+                 lr_schedule='step') -> None:
         self.samples_per_symbol = samples_per_symbol
         self.batch_size = batch_size
         self.torch_device = torch_device
         self.dtype = dtype
-        self.loss_print_interval = 500  # FIXME: Make part of constructor
+        self.loss_print_interval = 250  # FIXME: Make part of constructor
         self.optimizer = None
         self.learning_rate = learning_rate
+        self.lr_schedule = lr_schedule
 
     def _check_input(self, input_array, syms_array):
         n_batches_input = len(input_array) // self.samples_per_symbol // self.batch_size
@@ -193,10 +194,11 @@ class GenericTorchPilotEqualizer(object):
         y_eq = torch.zeros((y.shape[-1] // self.samples_per_symbol), dtype=y.dtype).to(device=self.torch_device)
 
         # Learning rate scheduler (step lr - learning rate is changed every step)
-        steps = 10
-        reduction = 0.1
-        gamma = np.exp(np.log(reduction) / steps)
-        lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
+        if self.lr_schedule:
+            steps = 10
+            reduction = 0.1
+            gamma = np.exp(np.log(reduction) / steps)
+            lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
         loss_curve = np.zeros((n_batches, ))
 
         # Loop over batches
@@ -211,11 +213,13 @@ class GenericTorchPilotEqualizer(object):
             loss = self._calculate_loss(xhat, y[this_input_slice], tx_symbol[this_sym_slice])
 
             if n % self.loss_print_interval == 0:
-                print(f"Batch {n}, Loss: {loss.item():.3f} (LR: {lr_schedule.get_last_lr()[-1]:.3e})")
+                lrprint = lr_schedule.get_last_lr()[-1] if self.lr_schedule else self.learning_rate
+                print(f"Batch {n}, Loss: {loss.item():.3f} (LR: {lrprint:.3e})")
 
             self._update_model(loss)
 
-            lr_schedule.step()
+            if self.lr_schedule:
+                lr_schedule.step()
 
             y_eq[n * self.batch_size: n * self.batch_size + self.batch_size] = xhat.clone().detach()
             loss_curve[n] = loss.item()
@@ -265,8 +269,8 @@ class TorchLMSPilot(GenericTorchPilotEqualizer):
     """ Simple feed-forward equaliser
     """
     def __init__(self, n_taps, learning_rate, samples_per_symbol,
-                 batch_size, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
-        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, flex_update_interval)
+                 batch_size, dtype=torch.float32, torch_device=torch.device("cpu"), lr_schedule='step') -> None:
+        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, lr_schedule)
 
         self.equaliser = torch.nn.Conv1d(kernel_size=n_taps, in_channels=1, out_channels=1,
                                          stride=self.samples_per_symbol, bias=False, padding=(n_taps - 1) // 2,
@@ -306,8 +310,9 @@ class TorchLMSPilot(GenericTorchPilotEqualizer):
 
 
 class SecondVolterraPilot(GenericTorchPilotEqualizer):
-    def __init__(self, n_lags1, n_lags2, learning_rate, samples_per_symbol, batch_size, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
-        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, flex_update_interval)
+    def __init__(self, n_lags1, n_lags2, learning_rate, samples_per_symbol, batch_size, dtype=torch.float32,
+                 torch_device=torch.device("cpu"), lr_schedule='step') -> None:
+        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, lr_schedule)
 
         # Initialize second order model
         self.equaliser = SecondOrderVolterraSeries(n_lags1=n_lags1, n_lags2=n_lags2, samples_per_symbol=samples_per_symbol,
@@ -348,8 +353,10 @@ class SecondVolterraPilot(GenericTorchPilotEqualizer):
 
 
 class WienerHammersteinNNPilot(GenericTorchPilotEqualizer):
-    def __init__(self, n_lags, n_hidden_unlus, unlu_depth, unlu_hidden_size, learning_rate, samples_per_symbol, batch_size, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
-        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, flex_update_interval)
+    def __init__(self, n_lags, n_hidden_unlus, unlu_depth, unlu_hidden_size, learning_rate,
+                 samples_per_symbol, batch_size, dtype=torch.float32, torch_device=torch.device("cpu"),
+                 lr_schedule='step') -> None:
+        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, lr_schedule)
 
         # Initialize WienerHammerStein NN
         self.equaliser = WienerHammersteinNN(n_lags=n_lags, n_hidden_unlus=n_hidden_unlus,
@@ -390,8 +397,8 @@ class GenericTorchBlindEqualizer(object):
     """
     IS_PROBABILISTIC = False
 
-    def __init__(self, samples_per_symbol, batch_size, learning_rate, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
-        # FIXME: "Flex" update scheme from (Lauinger, 2022)
+    def __init__(self, samples_per_symbol, batch_size, learning_rate, dtype=torch.float32, torch_device=torch.device("cpu"),
+                 lr_schedule='step') -> None:
         self.samples_per_symbol = samples_per_symbol
         self.batch_size = batch_size
         self.torch_device = torch_device
@@ -399,6 +406,7 @@ class GenericTorchBlindEqualizer(object):
         self.loss_print_interval = 100  # FIXME: Make part of constructor
         self.learning_rate = learning_rate
         self.optimizer = None
+        self.lr_schedule = lr_schedule
 
     def _check_input(self, input_array):
         n_batches = len(input_array) // self.samples_per_symbol // self.batch_size
@@ -425,10 +433,11 @@ class GenericTorchBlindEqualizer(object):
         y_eq = torch.zeros((y.shape[-1] // self.samples_per_symbol, ), dtype=y.dtype).to(device=self.torch_device)
 
         # Learning rate scheduler (step lr - learning rate is changed every step)
-        steps = 10
-        reduction = 0.1
-        gamma = np.exp(np.log(reduction) / steps)
-        lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
+        if self.lr_schedule:
+            steps = 10
+            reduction = 0.1
+            gamma = np.exp(np.log(reduction) / steps)
+            lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
         loss_curve = np.zeros((n_batches, ))
 
         # Loop over batches
@@ -441,11 +450,13 @@ class GenericTorchBlindEqualizer(object):
             loss = self._calculate_loss(xhat, y[this_slice])
 
             if n % self.loss_print_interval == 0:
-                print(f"Batch {n}, Loss: {loss.item():.3f} (LR: {lr_schedule.get_last_lr()[-1]:.3e})")
+                lrprint = lr_schedule.get_last_lr()[-1] if self.lr_schedule else self.learning_rate
+                print(f"Batch {n}, Loss: {loss.item():.3f} (LR: {lrprint:.3e})")
 
             self._update_model(loss)
 
-            lr_schedule.step()
+            if self.lr_schedule:
+                lr_schedule.step()
 
             y_eq[n * self.batch_size: n * self.batch_size + self.batch_size] = xhat.clone().detach()
             loss_curve[n] = loss.item()
@@ -517,8 +528,8 @@ class VAELinearForward(GenericTorchBlindProbabilisticEqualizer):
     def __init__(self, channel_n_taps, learning_rate, constellation: np.ndarray,
                  samples_per_symbol, batch_size, dtype=torch.float32, noise_variance=1.0,
                  adaptive_noise_variance=True,
-                 torch_device=torch.device('cpu'), flex_update_interval=None, **equaliser_kwargs) -> None:
-        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, flex_update_interval)
+                 torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
+        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, lr_schedule)
 
         # Channel model - in this type of VAE always a FIRfilter
         assert (samples_per_symbol <= channel_n_taps)
@@ -640,9 +651,9 @@ class VAELinearForward(GenericTorchBlindProbabilisticEqualizer):
 
 class LinearVAE(VAELinearForward):
     def __init__(self, channel_n_taps, learning_rate, constellation: np.ndarray, samples_per_symbol,
-                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), flex_update_interval=None, **equaliser_kwargs) -> None:
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
         super().__init__(channel_n_taps, learning_rate, constellation, samples_per_symbol,
-                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, flex_update_interval, **equaliser_kwargs)
+                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, lr_schedule, **equaliser_kwargs)
 
     def initialize_equaliser(self, **equaliser_kwargs):
         # Equaliser FIR filter -  n_taps (padded with zeros)
@@ -663,9 +674,9 @@ class LinearVAE(VAELinearForward):
 
 class SecondVolterraVAE(VAELinearForward):
     def __init__(self, channel_memory, learning_rate, constellation: np.ndarray, samples_per_symbol,
-                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), flex_update_interval=None, **equaliser_kwargs) -> None:
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
         super().__init__(channel_memory, learning_rate, constellation, samples_per_symbol,
-                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, flex_update_interval, **equaliser_kwargs)
+                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, lr_schedule, **equaliser_kwargs)
 
     def initialize_equaliser(self, **equaliser_kwargs):
         # Equalizer is a second order Volterra model
@@ -691,8 +702,8 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
     def __init__(self, channel_memory, learning_rate, constellation: np.ndarray,
                  samples_per_symbol, batch_size, dtype=torch.float32, noise_variance=1.0,
                  adaptive_noise_variance=True,
-                 torch_device=torch.device('cpu'), flex_update_interval=None, **equaliser_kwargs) -> None:
-        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, flex_update_interval)
+                 torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
+        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, lr_schedule)
 
         # Channel model - in this type of VAE always a Volterra filter of second order
         # FIXME: Currently assumes that n_taps equals lag in both 1st and 2nd order kernel
@@ -898,9 +909,9 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
 
 class LinearVOLVO(VAESecondVolterraForward):
     def __init__(self, channel_memory, learning_rate, constellation: np.ndarray, samples_per_symbol,
-                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), flex_update_interval=None, **equaliser_kwargs) -> None:
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
         super().__init__(channel_memory, learning_rate, constellation, samples_per_symbol,
-                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, flex_update_interval, **equaliser_kwargs)
+                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, lr_schedule, **equaliser_kwargs)
 
     def initialize_equaliser(self, **equaliser_kwargs):
         # Equaliser FIR filter -  n_taps (padded with zeros)
@@ -921,9 +932,9 @@ class LinearVOLVO(VAESecondVolterraForward):
 
 class SecondVolterraVOLVO(VAESecondVolterraForward):
     def __init__(self, channel_memory, learning_rate, constellation: np.ndarray, samples_per_symbol,
-                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), flex_update_interval=None, **equaliser_kwargs) -> None:
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
         super().__init__(channel_memory, learning_rate, constellation, samples_per_symbol,
-                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, flex_update_interval, **equaliser_kwargs)
+                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, lr_schedule, **equaliser_kwargs)
 
     def initialize_equaliser(self, **equaliser_kwargs):
         # Equalizer is a second order Volterra model
