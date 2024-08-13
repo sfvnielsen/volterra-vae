@@ -21,8 +21,8 @@ if __name__ == "__main__":
     samples_per_symbol_out = 2
     seed = 124545
     snr_db = 16.0
-    N_symbols = int(10e6)
-    change_point = int(1e6)  # in symbols
+    N_symbols = int(5e6)
+    change_point = int(5e5)  # in symbols
     N_symbols_val = int(1e6)  # number of symbols used for SER calculation
     batch_size = 500  # in symbols
 
@@ -34,7 +34,7 @@ if __name__ == "__main__":
 
     # Channel config
     wh_config = {
-        "fir1": [1.0, 0.4, -0.45],  # FIR filter with two zeros (at 0.5, -0.9)
+        "fir1": [1.0, 0.3, 0.1],  # FIR filter with two zeros (at ?? and ??)
         "fir1_alt": [1., 0.5, 0.1525],  # FIR filter with two zeros (at -0.25 \pm 0.3j)
         "fir2": [ 1., -0.2, 0.02],  # FIR filter with two zeros (at 0.1 \pm 0.1j)
         "nl_type": 'poly',
