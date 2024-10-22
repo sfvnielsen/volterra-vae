@@ -1,6 +1,9 @@
-# Volterra Variational Autoencoder (VOLVO)
+# Volterra Variational Autoencoder (VOLVO / V2VAE)
 This repository contains the implementation of the VOLterra VariatiOnal autoencoder, i.e. a variational autoencoder where the decoder is a Volterra filter.
 The work is based on the VAE for equalization of communication systems [1, 2].
+
+Check out our paper which is currently a preprint:
+https://arxiv.org/abs/2410.16125
 
 ## Getting started
 
