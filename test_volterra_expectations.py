@@ -10,6 +10,28 @@ from scipy.linalg import toeplitz
 from numba import njit, prange, set_num_threads
 
 
+# Numba functions for computing the empirical values of the H kernel applied to the signal x
+@njit(parallel=True)
+def sample_bernoulli_H_linear(result_array, p, H, random_generator):
+    nlags = len(h)
+    for i in prange(len(result_array)):
+        x = random_generator.uniform(size=len(p)) <= p
+        x = x.astype(np.float64)
+        ysum = 0.0
+        for j in range(len(p) - nlags + 1):
+            ysum += (x[j:nlags+j][::-1].T @ H @ x[j:nlags+j][::-1])
+        result_array[i] = ysum
+
+@njit(parallel=True)
+def sample_normal_H_linear(result_array, mu, var, H, random_generator):
+    nlags = len(h)
+    for i in prange(len(result_array)):
+        x = np.sqrt(var) * random_generator.standard_normal(size=len(mu)) + mu
+        ysum = 0.0
+        for j in range(len(p) - nlags + 1):
+            ysum += (x[j:nlags+j][::-1].T @ H @ x[j:nlags+j][::-1])
+        result_array[i] = ysum
+
 # Numba functions for computing the empirical values of the 1st order kernel applied to the signal (h x) squared
 @njit(parallel=True)
 def sample_bernoulli_first_term(result_array, p, h, random_generator):
@@ -152,6 +174,36 @@ if __name__ == "__main__":
             ex4 = mu ** 4 + 6 * mu ** 2 * variance + 3 * variance ** 2
 
         """
+            Expectation of H applied to x E[H_ij x_i x_j]
+        """
+        print('Computing linear H term expectation...')
+        start = time.time()
+        empirical = np.zeros((NDRAWS,))
+
+        if x_distribution == 'bernoulli':
+            sample_bernoulli_H_linear(empirical, p, H, random_obj)
+        elif x_distribution == 'normal':
+            sample_normal_H_linear(empirical, mu, variance, H, random_obj)
+        else:
+            raise ValueError
+
+        emp_mean = np.mean(empirical)
+        print(f"Empirical expectation of E[Hij xi xj]: {emp_mean}")
+        standard_error = np.std(empirical) / np.sqrt(NDRAWS)
+        print(f"Associated standard error: {standard_error}")
+
+        # Calculate expectation from derived formula
+        derived = 0.0
+        for j in range(len(ex) - H.shape[0] + 1):
+            derived += (ex[j:H.shape[0]+j][::-1].T @ H @ ex[j:H.shape[0]+j][::-1])
+        derived += np.sum(np.convolve(ex2, np.diag(H), 'valid')) - np.sum(np.convolve(ex**2, np.diag(H), 'valid'))
+
+        print(f"Theoretial expectation: {derived}")
+
+        end = time.time()
+        print(f"Time elapsed: {end- start} s")
+
+        """
                 1st order term - E[x_i x_j h_i h_j]
         """
         print('Computing 1st order term expectation...')
@@ -223,17 +275,17 @@ if __name__ == "__main__":
         ax_ct[s].axvline(x=np.mean(empirical), color='b', linestyle='--')
 
         ax_ct[s].text(rel_text_placement[0], rel_text_placement[1], f'Emp. mean: {emp_mean:.5f}\n Standard error {standard_error:.5f}', horizontalalignment='center',
-                      verticalalignment='center', transform=ax_ct[s].transAxes, color='b')
+                    verticalalignment='center', transform=ax_ct[s].transAxes, color='b')
         ax_ct[s].text(rel_text_placement[0], rel_text_placement[1] - 0.1, f'Derived: {derived:.5f}', horizontalalignment='center',
-                      verticalalignment='center', transform=ax_ct[s].transAxes, color='r')
+                    verticalalignment='center', transform=ax_ct[s].transAxes, color='r')
 
         if (derived < (emp_mean + 1.96 * standard_error)) and (derived > (emp_mean - 1.96 * standard_error)):
             ax_ct[s].text(rel_text_placement[0], rel_text_placement[1] - 0.3, "Theory is within 95pct conf", horizontalalignment='center',
-                      verticalalignment='center', transform=ax_ct[s].transAxes, color='k')
+                    verticalalignment='center', transform=ax_ct[s].transAxes, color='k')
 
         """
 
-               Squared term - E[x_i x_j x_k x_l H_ij H_kl]
+            Squared term - E[x_i x_j x_k x_l H_ij H_kl]
 
         """
         print('Computing squared term expectation...')
@@ -263,7 +315,7 @@ if __name__ == "__main__":
         exsqexex = np.einsum('ni,nj,nk->ijk', ex_lag**2, ex_lag, ex_lag)
         if symmetric_second_order_kernel:
             x2xx_sum = np.sum(np.multiply(ex2exex - exsqexex,
-                                      2 * np.einsum('ii,jk->ijk', H, H) + 4 * np.einsum('ij,ik->ijk', H, H)))
+                                    2 * np.einsum('ii,jk->ijk', H, H) + 4 * np.einsum('ij,ik->ijk', H, H)))
         else:
             x2xx_sum = np.sum(np.multiply(ex2exex - exsqexex,
                                         np.einsum('ii,jk->ijk', H, H) + np.einsum('ij,ik->ijk', H, H) + np.einsum('ij,ki->ijk', H, H) + np.einsum('ji,ik->ijk', H, H) + np.einsum('ji,ki->ijk', H, H) + np.einsum('jk,ii->ijk', H, H)))
@@ -275,7 +327,7 @@ if __name__ == "__main__":
         exsqexsq = np.einsum('ni,nj->ij', ex_lag**2, ex_lag**2)
         if symmetric_second_order_kernel:
             x2x2_sum = np.sum(np.multiply(ex2ex2 - ex2exsq - exsqex2 + exsqexsq,
-                              2 * np.einsum('ij,ij->ij', H, H) + np.einsum('ii,jj->ij', H, H)))
+                            2 * np.einsum('ij,ij->ij', H, H) + np.einsum('ii,jj->ij', H, H)))
         else:
             x2x2_sum = np.sum(np.multiply(ex2ex2 - ex2exsq - exsqex2 + exsqexsq,
                             np.einsum('ij,ij->ij', H, H) + np.einsum('ii,jj->ij', H, H) + np.einsum('ij,ji->ij', H, H)))
@@ -285,7 +337,7 @@ if __name__ == "__main__":
         excubex = np.einsum('ni,nj->ij', ex_lag**3, ex_lag)
         if symmetric_second_order_kernel:
             x3x_sum = np.sum(np.multiply(ex3ex - 3 * ex2twoex + 2 * excubex,
-                                     4 * np.einsum('ii,ij->ij', H, H)))
+                                    4 * np.einsum('ii,ij->ij', H, H)))
         else:
             x3x_sum = np.sum(np.multiply(ex3ex - 3 * ex2twoex + 2 * excubex,
                                         np.einsum('ii,ij->ij', H, H) + np.einsum('ii,ji->ij', H, H) + np.einsum('ij,ii->ij', H, H) + np.einsum('ji,ii->ij', H, H)))
@@ -305,9 +357,9 @@ if __name__ == "__main__":
         ax_sqt[s].axvline(x=np.mean(empirical), color='b', linestyle='--')
 
         ax_sqt[s].text(rel_text_placement[0], rel_text_placement[1], f'Emp. mean: {emp_mean:.5f}\n Standard error {standard_error:.5f}', horizontalalignment='center',
-                       verticalalignment='center', transform=ax_sqt[s].transAxes, color='b')
+                    verticalalignment='center', transform=ax_sqt[s].transAxes, color='b')
         ax_sqt[s].text(rel_text_placement[0], rel_text_placement[1] - 0.1, f'Derived: {derived:.5f}', horizontalalignment='center',
-                       verticalalignment='center', transform=ax_sqt[s].transAxes, color='r')
+                    verticalalignment='center', transform=ax_sqt[s].transAxes, color='r')
 
         if (derived < (emp_mean + 1.96 * standard_error)) and (derived > (emp_mean - 1.96 * standard_error)):
             ax_sqt[s].text(rel_text_placement[0], rel_text_placement[1] - 0.3, "Theory is within 95pct conf", horizontalalignment='center',

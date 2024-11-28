@@ -819,7 +819,7 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
 
         # More subterms - apply channel model to expected x
         hex = taf.convolve(ex, self.channel_h1, mode='valid')
-        h2ex = self._apply_second_order_kernel(ex, H)
+        h2ex = self._apply_second_order_kernel(ex, H) + taf.convolve(ex2, torch.diag(self.channel_h2), mode='valid') - taf.convolve(ex**2, torch.diag(self.channel_h2), mode='valid')
 
         # Compute higher order interaction terms
         # E[(h * x)^2] - expectation of h applied to x squared
