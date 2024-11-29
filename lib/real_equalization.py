@@ -950,3 +950,191 @@ class SecondVolterraVOLVO(VAESecondVolterraForward):
 
     def __repr__(self) -> str:
         return "SecondVolterraVOLVO"
+
+
+class VAEHammersteinForward(GenericTorchBlindProbabilisticEqualizer):
+    """
+        Parent class for all the blind-equalizer VAEs with a Hammerstein channel model (static second order polynomial)
+    """
+    def __init__(self, channel_memory, learning_rate, constellation: np.ndarray,
+                 samples_per_symbol, batch_size, dtype=torch.float32, noise_variance=1.0,
+                 adaptive_noise_variance=True,
+                 torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
+        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, lr_schedule)
+
+        # Channel model - in this type of VAE always a Volterra filter of second order
+        assert (samples_per_symbol <= channel_memory)
+        self.channel_memory = channel_memory
+        channel_h = torch.zeros((self.channel_memory,), dtype=self.dtype)
+        self.channel_h = channel_h.to(self.torch_device)
+        self.channel_h.data[self.channel_memory // 2] = 1.0
+        self.channel_h.requires_grad = True
+        self.alpha_1 = torch.scalar_tensor(1.0, requires_grad=True)
+        self.alpha_2 = torch.scalar_tensor(0.0, requires_grad=True)
+
+        # Equaliser model - method initialize_decoder to be implemented by each child of this class
+        self.equaliser = self.initialize_equaliser(**equaliser_kwargs)
+
+        # Noise variance
+        self.noise_variance = torch.scalar_tensor(noise_variance, dtype=self.dtype, requires_grad=False)
+        self.noise_variance.to(self.torch_device)
+        self.adaptive_noise_variance = adaptive_noise_variance
+
+        # Learning parameters
+        self.learning_rate_second_order = learning_rate # / 10  # define lr of second order kernel in channel model
+
+        # Process constellation
+        self.constellation = torch.from_numpy(constellation).type(self.dtype).to(self.torch_device)
+        self.constellation_size = len(self.constellation)
+
+        # Define noise scaling pr. symbol
+        self.noise_scaling = torch.ones_like(self.constellation)
+        self.noise_scaling.requires_grad = True
+
+        # Define constellation prior
+        # FIXME: Currently uniform - change in accordance to (Lauinger, 2022) (PCS)
+        self.constellation_prior = torch.ones((self.constellation_size,), dtype=self.dtype, device=self.torch_device) / self.constellation_size
+
+        # Define Softmax layer
+        self.sm = torch.nn.Softmax(dim=-1)
+
+        # Epsilon for log conversions
+        self.epsilon = 1e-12
+
+    def get_parameters(self):
+        return [{'params': self.channel_h, 'name': 'channel_h'},
+                {'params': self.alpha_1, 'name': 'alpha1'},
+                {'params': self.alpha_2, 'name': 'alpha2'},
+                {'params': self.equaliser.parameters(), 'name': 'equaliser'},
+                {'params': self.noise_scaling, 'name': 'noise_scale'}]
+
+    def initialize_equaliser(self, **equaliser_kwargs) -> torch.nn.Module:
+        # weak implementation
+        raise NotImplementedError
+
+    def forward(self, y) -> torch.TensorType:
+        # weak implementation
+        raise NotImplementedError
+    
+    def forward_probs(self, y_in):
+        y = self.forward(y_in)
+        return self._soft_demapping(y)
+
+    def _soft_demapping(self, xhat):
+        # Produce softmax outputs from equalised signal
+        # xhat is a [N] tensor (vector of inputs)
+        # output is [M, N] tensor, where M is the number of unique amplitude levels for the constellation
+        # FIXME: Implement the real soft-demapping from (Lauinger, 2022) based on Maxwell-Boltzmann distribution
+        # NB! Lauinger has a normalization step of xhat before this. Removed because it is not needed?
+        qest = torch.transpose(self.sm.forward(-(torch.outer(xhat, torch.ones_like(self.constellation)) - self.constellation)**2 / (self.noise_variance * self.noise_scaling)), 1, 0)
+        return qest
+
+    def _unfold_and_flip(self, input_seq: torch.TensorType):
+        # helper function to create the toeplitz matrix
+        return torch.flip(input_seq.unfold(0, self.channel_memory, 1), (1, ))
+
+    def _calculate_loss(self, xhat, y):
+        pre_delay = (self.channel_memory - 1) // 2
+        end_delay = -(self.channel_memory - 1) // 2
+
+        # Do soft-demapping on equalised signal
+        qest = self._soft_demapping(xhat)
+
+        # KL Divergence term
+        kl_div = torch.sum(qest[:, pre_delay:end_delay] * (torch.log(qest[:, pre_delay:end_delay] / self.constellation_prior[:, None] + self.epsilon)), dim=0)
+
+        # Expectation of likelihood term - calculate subterms first - follow naming convention from (Lauinger 2022, https://github.com/kit-cel/vae-equalizer)
+        ex = torch.zeros_like(y).to(self.torch_device)  # Insert zero on elements not in multiplum of SpS
+        ex2 = torch.zeros_like(y).to(self.torch_device)
+        ex3 = torch.zeros_like(y).to(self.torch_device)
+        ex4 = torch.zeros_like(y).to(self.torch_device)
+
+        qc = qest * self.constellation[:, None]
+        ex[::self.samples_per_symbol] = torch.sum(qc, dim=0)
+
+        qc2 = qest * self.constellation[:, None] ** 2
+        ex2[::self.samples_per_symbol] = torch.sum(qc2, dim=0)
+
+        qc3 = qest * self.constellation[:, None] ** 3
+        ex3[::self.samples_per_symbol] = torch.sum(qc3, dim=0)
+
+        qc4 = qest * self.constellation[:, None] ** 4
+        ex4[::self.samples_per_symbol] = torch.sum(qc4, dim=0)
+
+        # More subterms - apply channel model to expected x
+        hex = self.alpha_1 * taf.convolve(ex, self.channel_h, mode='valid')
+        hex2 = self.alpha_2 *taf.convolve(ex2, self.channel_h, mode='valid')
+
+        # E[(h x h x^2) - cross term
+        e_hxhx2 = torch.sum(taf.convolve(ex2, self.channel_h, mode='valid') * taf.convolve(ex, self.channel_h, mode='valid') + taf.convolve(ex3 - ex2 * ex, self.channel_h**2, mode='valid'))
+
+        # E[(h x)^2]
+        e_hxsq = torch.sum(taf.convolve(ex, self.channel_h, mode='valid')**2 + taf.convolve(ex2 - ex**2, self.channel_h**2, mode='valid'))
+
+        # E[(h x^2)^2]
+        e_hx2sq = torch.sum(taf.convolve(ex2, self.channel_h, mode='valid')**2 + taf.convolve(ex4 - ex2**2, self.channel_h**2, mode='valid'))
+   
+        # Calculate loss - apply indexing to y to remove boundary effects from convolution (mode='valid')
+        y_times_filters = torch.matmul(y[pre_delay:end_delay], hex) + torch.matmul(y[pre_delay:end_delay], hex2)
+        exponent_term = torch.sum(torch.square(y[pre_delay:end_delay])) - 2 * y_times_filters + 2 * self.alpha_1 * self.alpha_2 * e_hxhx2 + self.alpha_1**2 * e_hxsq + self.alpha_2**2 * e_hx2sq
+        loss = torch.sum(kl_div) + (y.shape[-1] - self.channel_memory + 1) * torch.log(exponent_term)
+
+        if self.adaptive_noise_variance:
+            with torch.no_grad():
+                self.noise_variance = exponent_term / (y.shape[-1] - self.channel_memory + 1)
+
+        return loss
+
+    def _update_model(self, loss):
+        loss.backward(retain_graph=True)
+        self.optimizer.step()
+
+        # Zero gradients
+        self.noise_variance.grad = None
+        self.channel_h.grad = None
+        self.alpha_1.grad = None
+        self.alpha_2.grad = None
+        self.equaliser.zero_grad()
+
+    def print_model_parameters(self):
+        # Print convolutional kernels
+        print(f"Equaliser: {self.equaliser.weight}")
+        print(f"Channel: {self.channel_h}")
+        print(f"Channel (non-linearity): {self.alpha_1:.4f}x + {self.alpha_2:.4f}x^2")
+
+        # Print noise variance
+        print(f"Noise variance: {self.noise_variance}")
+
+    def train_mode(self):
+        self.channel_h.requires_grad = True
+        self.alpha_1.requires_grad = True
+        self.alpha_2.requires_grad = True
+        self.equaliser.train()
+
+    def eval_mode(self):
+        self.channel_h.requires_grad = False
+        self.alpha_1.requires_grad = False
+        self.alpha_2.requires_grad = False
+        self.equaliser.eval() 
+
+
+class SecondVolterraHVAE(VAEHammersteinForward):
+    def __init__(self, channel_memory, learning_rate, constellation: np.ndarray, samples_per_symbol,
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
+        super().__init__(channel_memory, learning_rate, constellation, samples_per_symbol,
+                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, lr_schedule, **equaliser_kwargs)
+
+    def initialize_equaliser(self, **equaliser_kwargs):
+        # Equalizer is a second order Volterra model
+        equaliser = SecondOrderVolterraSeries(n_lags1=equaliser_kwargs['equaliser_n_lags1'],
+                                              n_lags2=equaliser_kwargs['equaliser_n_lags2'],
+                                              samples_per_symbol=self.samples_per_symbol,
+                                              dtype=self.dtype, torch_device=self.torch_device)
+        return equaliser
+
+    def forward(self, y):
+        y_eq = self.equaliser.forward(y)
+        return y_eq
+
+    def __repr__(self) -> str:
+        return "SecondVolterraHVAE"
