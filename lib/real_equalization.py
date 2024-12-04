@@ -907,7 +907,7 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
         self.equaliser.eval()
 
 
-class LinearVOLVO(VAESecondVolterraForward):
+class LinearV2VAE(VAESecondVolterraForward):
     def __init__(self, channel_memory, learning_rate, constellation: np.ndarray, samples_per_symbol,
                  batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
         super().__init__(channel_memory, learning_rate, constellation, samples_per_symbol,
@@ -927,10 +927,10 @@ class LinearVOLVO(VAESecondVolterraForward):
         return y_eq
 
     def __repr__(self) -> str:
-        return "LinVOLVO"
+        return "LinV2VAE"
 
 
-class SecondVolterraVOLVO(VAESecondVolterraForward):
+class SecondVolterraV2VAE(VAESecondVolterraForward):
     def __init__(self, channel_memory, learning_rate, constellation: np.ndarray, samples_per_symbol,
                  batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
         super().__init__(channel_memory, learning_rate, constellation, samples_per_symbol,
@@ -949,7 +949,7 @@ class SecondVolterraVOLVO(VAESecondVolterraForward):
         return y_eq
 
     def __repr__(self) -> str:
-        return "SecondVolterraVOLVO"
+        return "SecondVolterraV2VAE"
 
 
 class VAEHammersteinForward(GenericTorchBlindProbabilisticEqualizer):

@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 from lib.data_generation import NonLinearISI
-from lib.real_equalization import SecondVolterraVAE, SecondVolterraVOLVO, SecondVolterraPilot
+from lib.real_equalization import SecondVolterraVAE, SecondVolterraV2VAE, SecondVolterraPilot
 from lib.utility import calc_ser_pam, calc_theory_ser_pam, calc_ser_from_probs
 
 
@@ -67,7 +67,7 @@ if __name__ == "__main__":
 
 
     # Create VAE object and process samples
-    vol2_volvo = SecondVolterraVOLVO(
+    vol2_v2vae = SecondVolterraV2VAE(
         channel_memory=channel_memory,
         equaliser_n_lags1=eq_lags1,
         equaliser_n_lags2=eq_lags2,
@@ -80,12 +80,12 @@ if __name__ == "__main__":
         torch_device=torch.device("cpu"),
         dtype=torch.float32
     )
-    print(f"{vol2_volvo} is probabilistic: {vol2_volvo.IS_PROBABILISTIC}")
+    print(f"{vol2_v2vae} is probabilistic: {vol2_v2vae.IS_PROBABILISTIC}")
     start_time = time.time()
-    vol2_volvo.initialize_optimizer()
-    __ = vol2_volvo.fit(rx)
-    q_vol2_volvo = vol2_volvo.estimate_symbol_probs(rx_val)
-    y_vol2_volvo = np.sum(q_vol2_volvo * vol2_volvo.constellation.numpy()[:, None], axis=0)
+    vol2_v2vae.initialize_optimizer()
+    __ = vol2_v2vae.fit(rx)
+    q_vol2_v2vae = vol2_v2vae.estimate_symbol_probs(rx_val)
+    y_vol2_v2vae = np.sum(q_vol2_v2vae * vol2_v2vae.constellation.numpy()[:, None], axis=0)
     print(f"Elapsed time: {time.time() - start_time}")
 
     # Create the Linear VAE object and process
@@ -126,20 +126,20 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(ncols=2, nrows=2)
     nbins = 100
     for this_ax, yout, label in zip(ax.flatten(),
-                                    (rx_val[::samples_per_symbol_out], y_vol2_volvo, y_vol2_vae, y_eq_mse),
-                                    ('Noisy symbols', 'VOLVO', 'LinVAE', f"{mse_pilot}")):
+                                    (rx_val[::samples_per_symbol_out], y_vol2_v2vae, y_vol2_vae, y_eq_mse),
+                                    ('Noisy symbols', 'V2VAE', 'LinVAE', f"{mse_pilot}")):
         this_ax.hist(yout, bins=nbins)
         this_ax.set_title(label)
 
     # Calculate error metrics - Symbol Error Rate (SER)
-    ser_volvo, __ = calc_ser_from_probs(q_vol2_volvo, syms_val, vol2_volvo.constellation.numpy())
+    ser_v2vae, __ = calc_ser_from_probs(q_vol2_v2vae, syms_val, vol2_v2vae.constellation.numpy())
     ser_vae, __ = calc_ser_from_probs(q_vol2_vae, syms_val, vol2_vae.constellation.numpy())
     ser_mse, __ = calc_ser_pam(y_eq_mse, syms_val)
     ser_no_eq, __ = calc_ser_pam(rx_val[::samples_per_symbol_out], syms_val)
     ser_theory = calc_theory_ser_pam(order, EsN0_db)
 
-    for ser, method in zip([ser_volvo, ser_vae, ser_mse, ser_no_eq, ser_theory],
-                           ["VOLVO", "VAE", f"{mse_pilot}", "No eq", "Theory"]):
+    for ser, method in zip([ser_v2vae, ser_vae, ser_mse, ser_no_eq, ser_theory],
+                           ["V2VAE", "VAE", f"{mse_pilot}", "No eq", "Theory"]):
         print(f"{method}: {ser:.4e} (SER)")
 
     # Plot non-linearity in Wiener-Hammerstein system

@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from lib.data_generation import TimeVaryingNonLinearISI
-from lib.real_equalization import TorchLMSPilot, SecondVolterraPilot, SecondVolterraVAE, SecondVolterraVOLVO
+from lib.real_equalization import TorchLMSPilot, SecondVolterraPilot, SecondVolterraVAE, SecondVolterraV2VAE
 from lib.utility import calc_ser_pam, calc_ser_from_probs
 
 
@@ -63,7 +63,7 @@ if __name__ == "__main__":
 
     # Allocate equalisers
     # Create VAE object and process samples
-    vol2_volvo = SecondVolterraVOLVO(
+    vol2_v2vae = SecondVolterraV2VAE(
         channel_memory=channel_memory,
         equaliser_n_lags1=n_eq_taps,
         equaliser_n_lags2=n_eq2_taps,
@@ -77,7 +77,7 @@ if __name__ == "__main__":
         dtype=torch.float32,
         lr_schedule=None
     )
-    vol2_volvo.initialize_optimizer()
+    vol2_v2vae.initialize_optimizer()
 
     # VAE
     vol2_vae = SecondVolterraVAE(
@@ -111,7 +111,7 @@ if __name__ == "__main__":
 
 
     # Run a change-point experiment pr. equalizer
-    eqs = [vol2_volvo, vol2_vae, volterra_pilot, lms_pilot]
+    eqs = [vol2_v2vae, vol2_vae, volterra_pilot, lms_pilot]
     res_dicts = []
 
     for equalizer in eqs:
