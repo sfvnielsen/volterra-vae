@@ -24,7 +24,7 @@ def sample_bernoulli_cross_term(result_array, p_re, p_im, h, random_generator):
             ysum += np.real(np.conjugate(h @ x[j:nlags+j][::-1]) * (h @ (x[j:nlags+j][::-1])**2))
         result_array[i] = ysum
 
-# Numba functions for computing the empirical values of the first squared term E[(h x)^* h x)]
+# Numba function for computing the empirical values of the first squared term E[(h x)^* h x)]
 @njit(parallel=True)
 def sample_bernoulli_squared_first_term(result_array, p_re, p_im, h, random_generator):
     nlags = len(h)
@@ -35,6 +35,19 @@ def sample_bernoulli_squared_first_term(result_array, p_re, p_im, h, random_gene
         ysum = 0.0
         for j in range(len(p_re) - nlags + 1):
             ysum += np.real(np.conjugate(h @ x[j:nlags+j][::-1]) * (h @ (x[j:nlags+j][::-1])))
+        result_array[i] = ysum
+
+# Numba function for computing the empirical values of the second squared term E[(h x^2)^* h x^2)]
+@njit(parallel=True)
+def sample_bernoulli_squared_second_term(result_array, p_re, p_im, h, random_generator):
+    nlags = len(h)
+    for i in prange(len(result_array)):
+        xre = random_generator.uniform(size=len(p_re)) <= p_re
+        xim = 1j * (random_generator.uniform(size=len(p_im)) <= p_im)
+        x = (xre + xim).astype(np.complex128)
+        ysum = 0.0
+        for j in range(len(p_re) - nlags + 1):
+            ysum += np.real(np.conjugate(h @ x[j:nlags+j][::-1]**2) * (h @ (x[j:nlags+j][::-1]**2)))
         result_array[i] = ysum
 
 
@@ -156,13 +169,38 @@ if __name__ == "__main__":
         print(f"Time elapsed: {end- start} s")
 
         plot_expecation_distribution(empirical, standard_error, ax_fisq[s], rel_text_placement)
+
+        """
+                Second squared term - E[(h_i x_i^2)^* (h_j x_j^2))]
+        """
+
+        print('Computing second squared term expectation...')
+        start = time.time()
+        empirical = np.zeros((NDRAWS,), dtype=np.float64)
+
+        # Call numba routine
+        sample_bernoulli_squared_second_term(empirical, pre, pim, h, random_obj)
+
+        emp_mean = np.mean(empirical)
+        print(f"Empirical expectation of E[(h x^2)* (h x)^2]: {emp_mean}")
+        standard_error = np.std(empirical) / np.sqrt(NDRAWS)
+        print(f"Associated standard error: {standard_error}")
+
+        # Calculate expectation from derived formula
+        derived = np.sum(np.square(d2i) + np.square(d2q) + np.convolve(np.abs(h)**2, ex4_i + ex4_q - ex2_i**2 - ex2_q**2 + 4*ex2_i * ex2_q - 4*ex_i**2*ex_q**2, 'valid'))
+        print(f"Theoretial expectation: {derived}")
+
+        end = time.time()
+        print(f"Time elapsed: {end- start} s")
+
+        plot_expecation_distribution(empirical, standard_error, ax_sesq[s], rel_text_placement)
         
 
     print("Done.")
 
     # Set some figure properties.
     fig_ct.suptitle('Cross terms E[Re(hx* hx2)]')
-    #fig_ct.savefig(os.path.join(FIGURE_DIR, f"{figpref}_cross_terms.png"), dpi=DPI)
     fig_fisq.suptitle('First squared term E[(hx* hx)]')
+    fig_sesq.suptitle('Second squared term E[(hx^2)* (hx^2)]')
 
     plt.show()
