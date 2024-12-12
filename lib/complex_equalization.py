@@ -4,7 +4,9 @@ import torch
 import torch.nn.functional as torchF
 from itertools import combinations_with_replacement
 from scipy.special import comb
+
 from lib.utility import calculate_mmse_weights
+from lib.torch_components import SecondOrderVolterraSeries
 
 
 class Passthrough(object):
@@ -487,6 +489,51 @@ class TorchLMSPilot(GenericTorchPilotEqualizer):
         self.equaliser.eval()
 
 
+class SecondVolterraPilot(GenericTorchPilotEqualizer):
+    """ 
+        Second order Volterra series equalizer
+    """
+    def __init__(self, n_lags1, n_lags2, learning_rate, samples_per_symbol,
+                 batch_size, dtype=torch.float32, torch_device=torch.device("cpu"), flex_update_interval=None) -> None:
+        super().__init__(samples_per_symbol, batch_size, dtype, torch_device, flex_update_interval)
+
+        self.learning_rate = learning_rate
+        self.equaliser = SecondOrderVolterraSeries(n_lags1=n_lags1, n_lags2=n_lags2, samples_per_symbol=self.samples_per_symbol,
+                                                   dtype=self.complex_dtype, torch_device=self.torch_device)
+
+        # Define optimizer object
+        self.optimizer = torch.optim.Adam([{'params': self.equaliser.parameters()}],
+                                          lr=self.learning_rate)
+
+    def __repr__(self) -> str:
+        return "SecondVolterraPilot"
+
+    def _update_model(self, loss):
+        loss.backward(retain_graph=True)
+        self.optimizer.step()
+        self.equaliser.zero_grad()
+
+    def forward(self, y):
+        y_eq = torch.empty((2, y.shape[-1] // self.samples_per_symbol))
+        y_eq_complex = self.equaliser.forward(torch.complex(y[0, :], y[1, :]))
+        y_eq[0, :] = torch.real(y_eq_complex)
+        y_eq[1, :] = torch.imag(y_eq_complex)
+        return y_eq
+
+    def _calculate_loss(self, xhat, y, syms):
+        # xhat and syms are [2, n_syms] tensors. Diff+square+sum = abs()**2
+        return torch.mean(torch.sum(torch.square(xhat - syms), dim=0))
+
+    def print_model_parameters(self):
+        print(f"SecondVolterraPilot: printing not implemented yet...")
+
+    def train_mode(self):
+        self.equaliser.train()
+
+    def eval_mode(self):
+        self.equaliser.eval()
+
+
 class ComplexTanH(torch.nn.Module):
     """ Applies tanh to real and imaginary part of complex input
     """
@@ -915,6 +962,31 @@ class LinearVAE(VAELinearForward):
     def __repr__(self) -> str:
         return "LinVAE"
 
+class SecondVolterraVAE(VAELinearForward):
+    """
+        VAE with linear channel model and second order Volterra equaliser.
+    """
+    def __init__(self, encoder_n_taps, learning_rate, constellation: np.ndarray, samples_per_symbol,
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), flex_update_interval=None, **decoder_kwargs) -> None:
+        super().__init__(encoder_n_taps, learning_rate, constellation, samples_per_symbol,
+                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, flex_update_interval, **decoder_kwargs)
+
+    def initialize_decoder(self, **decoder_kwargs):
+        # Decoder - n_taps (equaliser) (padded with zeros)
+        decoder = SecondOrderVolterraSeries(n_lags1=decoder_kwargs['decoder_n_lags1'], n_lags2=decoder_kwargs['decoder_n_lags2'], samples_per_symbol=self.samples_per_symbol,
+                                            dtype=self.complex_dtype, torch_device=self.torch_device)
+        return decoder
+
+    def forward(self, y):
+        y_eq = torch.empty((2, y.shape[-1] // self.samples_per_symbol))
+        y_eq_complex = self.decoder.forward(torch.complex(y[0, :], y[1, :]))
+        y_eq[0, :] = torch.real(y_eq_complex)
+        y_eq[1, :] = torch.imag(y_eq_complex)
+        return y_eq
+
+    def __repr__(self) -> str:
+        return "SecondVolterraVAE"
+
 class PermuteLayer(torch.nn.Module):
     def __init__(self, perm: tuple, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -964,3 +1036,234 @@ class Conv1DVAE(VAELinearForward):
 
     def __repr__(self) -> str:
         return "StackedConv1DVAE"
+
+
+class VAEHammersteinForward(GenericTorchBlindEqualizer):
+    """ Parent class for all the VAEs with Hammerstein model as the channel model.
+        Non-linearity is parameterized as a second order polynomial
+    """
+    def __init__(self, encoder_n_taps, learning_rate, constellation: np.ndarray,
+                 samples_per_symbol, batch_size, dtype=torch.float32, noise_variance=1.0,
+                 adaptive_noise_variance=True,
+                 torch_device=torch.device('cpu'), flex_update_interval=None, **decoder_kwargs) -> None:
+        super().__init__(samples_per_symbol, batch_size, dtype, torch_device, flex_update_interval)
+
+        # Encoder - n_taps (forward channel model)
+        # NB! No padding applied to foward model
+        # FIXME: Naming. move away from calling it encoder...
+        assert (samples_per_symbol <= encoder_n_taps)
+        self.encoder_n_taps = encoder_n_taps
+        self.encoder = torch.nn.Conv1d(kernel_size=encoder_n_taps, in_channels=2, out_channels=1,
+                                       bias=False, dtype=self.dtype)
+        torch.nn.init.dirac_(self.encoder.weight)
+        self.encoder.to(self.torch_device)
+        self.alpha_1 = torch.scalar_tensor(1.0, requires_grad=True)
+        self.alpha_2 = torch.scalar_tensor(0.0, requires_grad=True)
+        self.alpha_1.to(self.torch_device)
+        self.alpha_2.to(self.torch_device)
+
+        # Decoder - equaliser model
+        self.decoder = self.initialize_decoder(**decoder_kwargs)
+
+        # Noise variance
+        self.noise_variance = torch.scalar_tensor(noise_variance, dtype=self.dtype, requires_grad=False)
+        self.noise_variance.to(self.torch_device)
+        self.adaptive_noise_variance = adaptive_noise_variance
+
+        # Learning parameters
+        self.learning_rate = learning_rate
+
+        # Process constellation
+        constellation_tensor = torch.from_numpy(constellation).type(self.complex_dtype).to(self.torch_device)
+        self.constellation_real = torch.unique(torch.real(constellation_tensor))
+        self.constellation_imag = torch.unique(torch.imag(constellation_tensor))
+        assert (len(self.constellation_real) == len(self.constellation_imag))
+        self.constellation_size = len(self.constellation_real) + len(self.constellation_imag)
+        self.constellation_amplitudes = torch.concatenate((self.constellation_real, self.constellation_imag))
+
+        # Define constellation prior
+        # FIXME: Currently uniform - change in accordance to (Lauinger, 2022) (PCS)
+        self.constellation_prior = torch.ones((self.constellation_size,), dtype=self.dtype, device=self.torch_device) / (self.constellation_size / 2)
+
+        # Define noise scaling variable
+        self.noise_scaling_real = torch.ones_like(self.constellation_real)
+        self.noise_scaling_real.requires_grad = True
+
+        self.noise_scaling_imag = torch.ones_like(self.constellation_imag)
+        self.noise_scaling_imag.requires_grad = True
+
+        # Define optimizer object
+        self.optimizer = torch.optim.Adam([{'params': self.encoder.parameters()},
+                                           {'params': self.decoder.parameters()},
+                                           {'params': self.noise_scaling_real, 'name': 'noise_scale_real'},
+                                           {'params': self.noise_scaling_imag, 'name': 'noise_scale_imag'}],
+                                          lr=self.learning_rate, amsgrad=True)
+
+        # Define Softmax layer
+        self.sm = torch.nn.Softmax(dim=-1)
+
+        # Epsilon for log conversions
+        self.epsilon = 1e-12
+
+    def initialize_decoder(self, **decoder_kwargs):
+        # weak implementation
+        raise NotImplementedError
+
+    def forward(self, y):
+        # weak implementation
+        raise NotImplementedError
+
+    def _soft_demapping(self, xhat):
+        # Produce softmax outputs from equalised signal
+        # xhat is a [2, N] tensor (real imag stacked)
+        # output is [2M, N] tensor, where M is the number of unique amplitude levels for the constellation
+        qest = torch.empty((self.constellation_size, xhat.shape[-1]), dtype=self.dtype, device=self.torch_device)
+        xn_real = xhat[0, :]  # Lauinger normalizes here before, doing the demapping. Does not seem to be necessary
+        xn_imag = xhat[1, :]
+        qest[0:self.constellation_size // 2, :] = torch.transpose(self.sm.forward(-(torch.outer(xn_real, torch.ones_like(self.constellation_real)) - self.constellation_real)**2 / (self.noise_variance * self.noise_scaling_real)), 1, 0)
+        qest[self.constellation_size // 2:, :] = torch.transpose(self.sm.forward(-(torch.outer(xn_imag, torch.ones_like(self.constellation_imag)) - self.constellation_imag)**2 / (self.noise_variance * self.noise_scaling_imag)), 1, 0)
+        return qest
+
+    def _calculate_loss(self, xhat, y):
+        pre_delay = (self.encoder_n_taps - 1) // 2
+        end_delay = -(self.encoder_n_taps - 1) // 2
+
+        # Do soft-demapping on equalised signal
+        # FIXME: How to handle models that output q-est directly?
+        qest = self._soft_demapping(xhat)
+
+        # KL Divergence term
+        kl_div = torch.sum(qest[:, pre_delay:end_delay] * (torch.log(qest[:, pre_delay:end_delay] / self.constellation_prior[:, None] + self.epsilon)), dim=0)
+
+        # Expectation of likelihood term - calculate subterms first - follow naming convention from Lauinger 2022
+        expect_x = torch.zeros_like(y)  # FIXME: Insert zero on elements not in multiplum of SpS
+        qc = qest * self.constellation_amplitudes[:, None]
+        expect_x[0, ::self.samples_per_symbol] = torch.sum(qc[0:self.constellation_size // 2, :], dim=0)
+        expect_x[1, ::self.samples_per_symbol] = torch.sum(qc[self.constellation_size // 2:, :], dim=0)
+
+        expect_x_sq = torch.zeros_like(y)
+        qc2 = qest * self.constellation_amplitudes[:, None] ** 2
+        expect_x_sq[0, ::self.samples_per_symbol] = torch.sum(qc2[0:self.constellation_size // 2, :], dim=0)
+        expect_x_sq[1, ::self.samples_per_symbol] = torch.sum(qc2[self.constellation_size // 2:, :], dim=0)
+
+        expect_x_cub = torch.zeros_like(y)
+        qc3 = qest * self.constellation_amplitudes[:, None] ** 3
+        expect_x_cub[0, ::self.samples_per_symbol] = torch.sum(qc3[0:self.constellation_size // 2, :], dim=0)
+        expect_x_cub[1, ::self.samples_per_symbol] = torch.sum(qc3[self.constellation_size // 2:, :], dim=0)
+
+        expect_x_four = torch.zeros_like(y)
+        qc4 = qest * self.constellation_amplitudes[:, None] ** 3
+        expect_x_four[0, ::self.samples_per_symbol] = torch.sum(qc4[0:self.constellation_size // 2, :], dim=0)
+        expect_x_four[1, ::self.samples_per_symbol] = torch.sum(qc4[self.constellation_size // 2:, :], dim=0)
+
+        # "Building block" expecations of h x and hx^2
+        d1i = self.encoder.forward((expect_x * self.conjugation_operator)[None, :, :]).squeeze()  # conjugate for D1R
+        d1q = self.encoder.forward(torch.roll(expect_x, 1, dims=0)[None, :, :]).squeeze()  # flip I and Q for D1Q
+        exx2 = torch.zeros_like(y)
+        exx2[0, :] = expect_x_sq[0, :] - expect_x_sq[1, :]
+        exx2[1, :] = 2 * expect_x[0, :] * expect_x[1, :]
+        d2i = self.encoder.forward((exx2 * self.conjugation_operator)[None, :, :]).squeeze()  # conjugate for D2R
+        d2q = self.encoder.forward(torch.roll(exx2, 1, dims=0)[None, :, :]).squeeze()  # flip I and Q for D2R
+
+        # Calcualte squared elementwise length of encoder filter
+        hsquared = torch.sum(torch.square(self.encoder.weight), dim=1, keepdim=True)
+
+        # Calculate loss - apply indexing to y to match with convolution
+        yehx = - self.alpha_1 * 2 * torch.matmul(y[0, pre_delay:end_delay], d1i) - self.alpha_1 * 2 * torch.matmul(y[1, pre_delay:end_delay], d1q)
+        yehx2 = - self.alpha_2 * 2 * torch.matmul(y[0, pre_delay:end_delay], d2i) - self.alpha_2 * 2 * torch.matmul(y[1, pre_delay:end_delay], d2q)
+        hehex2 = self.alpha_1 * self.alpha_2 * torch.sum((d1i * d2i  + d1q * d2q + torch.conv1d((expect_x_cub[0, :] - expect_x[0, :] * expect_x_sq[0, :] + 2*(expect_x[0, :] * expect_x_sq[1, :] - expect_x[0, :] * expect_x[1, :]**2))[None, None, :],
+                                                                                                hsquared)))
+        hexsq = self.alpha_1**2 * torch.sum(d1i**2 + d1q**2 + torch.conv1d((expect_x_sq[0, : ] + expect_x_sq[1, :] - expect_x[0, :]**2 - expect_x[1, :]**2)[None, None, :],
+                                                                           hsquared))
+        hex2sq = self.alpha_2**2 * torch.sum(d2i**2 + d2q**2 + torch.conv1d((expect_x_four[0, : ] + expect_x_four[1, :] - expect_x_sq[0, :]**2 - expect_x_sq[1, :]**2 + 4 * expect_x_sq[0, :]**2 * expect_x_sq[1, :]**2 - 4 * expect_x[0, :]**2 * expect_x[1, :]**2)[None, None, :],
+                                                                            hsquared))
+        exponent_term = torch.sum(torch.square(y[:, pre_delay:end_delay])) + yehx + yehx2 + 2 * hehex2 + hexsq + hex2sq
+        loss = torch.sum(kl_div) + (y.shape[-1] - self.encoder_n_taps + 1) * torch.log(exponent_term)
+
+        if self.adaptive_noise_variance:
+            with torch.no_grad():
+                self.noise_variance = exponent_term / (y.shape[-1] - self.encoder_n_taps + 1)
+
+        return loss
+
+    def _update_model(self, loss):
+        loss.backward(retain_graph=True)
+        self.optimizer.step()
+
+        # Zero gradients
+        self.noise_variance.grad = None
+        for module in [self.encoder, self.decoder]:
+            module.zero_grad()
+
+    def print_model_parameters(self):
+        # Print convolutional kernels
+        for module_name, module in zip(["encoder", "decoder"],
+                                       [self.encoder, self.decoder]):
+            print(f"{module_name}: {module.weight}")
+
+        # Print noise variance
+        print(f"Noise variance: {self.noise_variance}")
+
+    def train_mode(self):
+        self.encoder.train()
+        self.decoder.train()
+
+    def eval_mode(self):
+        self.encoder.eval()
+        self.decoder.eval()
+
+
+class LinearHVAE(VAEHammersteinForward):
+    """
+        HVAE with linear channel model and linear equaliser.
+    """
+    def __init__(self, encoder_n_taps, learning_rate, constellation: np.ndarray, samples_per_symbol,
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), flex_update_interval=None, **decoder_kwargs) -> None:
+        super().__init__(encoder_n_taps, learning_rate, constellation, samples_per_symbol,
+                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, flex_update_interval, **decoder_kwargs)
+
+    def initialize_decoder(self, **decoder_kwargs):
+        # Decoder - n_taps (equaliser) (padded with zeros)
+        decoder = torch.nn.Conv1d(kernel_size=decoder_kwargs['decoder_n_taps'], in_channels=2, out_channels=1,
+                                  stride=self.samples_per_symbol, bias=False, padding=(decoder_kwargs['decoder_n_taps'] - 1) // 2,
+                                  dtype=self.dtype)
+        torch.nn.init.dirac_(decoder.weight)
+        decoder.to(self.torch_device)
+        return decoder
+
+    def forward(self, y):
+        # NB! In this formulation the weights are preconjugated
+        y_eq = torch.empty((2, y.shape[-1] // self.samples_per_symbol))
+        y_eq[0, :] = self.decoder.forward(y[None, :, :]).squeeze()
+        y_eq[1, :] = self.decoder.forward((torch.roll(y, 1, dims=0) * self.conjugation_operator)[None, :, :]).squeeze()
+        return y_eq
+
+    def __repr__(self) -> str:
+        return "LinHVAE"
+    
+
+class SecondVolterraHVAE(VAEHammersteinForward):
+    """
+        VAE with Hammerstein channel model and second order Volterra equaliser.
+    """
+    def __init__(self, encoder_n_taps, learning_rate, constellation: np.ndarray, samples_per_symbol,
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), flex_update_interval=None, **decoder_kwargs) -> None:
+        super().__init__(encoder_n_taps, learning_rate, constellation, samples_per_symbol,
+                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, flex_update_interval, **decoder_kwargs)
+
+    def initialize_decoder(self, **decoder_kwargs):
+        # Decoder - n_taps (equaliser) (padded with zeros)
+        decoder = SecondOrderVolterraSeries(n_lags1=decoder_kwargs['decoder_n_lags1'], n_lags2=decoder_kwargs['decoder_n_lags2'], samples_per_symbol=self.samples_per_symbol,
+                                            dtype=self.complex_dtype, torch_device=self.torch_device)
+        return decoder
+
+    def forward(self, y):
+        y_eq = torch.empty((2, y.shape[-1] // self.samples_per_symbol))
+        y_eq_complex = self.decoder.forward(torch.complex(y[0, :], y[1, :]))
+        y_eq[0, :] = torch.real(y_eq_complex)
+        y_eq[1, :] = torch.imag(y_eq_complex)
+        return y_eq
+
+    def __repr__(self) -> str:
+        return "SecondVolterraHVAE"
+

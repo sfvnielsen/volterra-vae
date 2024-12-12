@@ -209,10 +209,10 @@ class WienerHammersteinSystem(object):
         We use a third order polynomial as the non-linearity by default.
     """
     def __init__(self, fir1, fir2, sps, nl_type='poly', **nl_config) -> None:
-        self.fir1 = np.zeros((sps * (len(fir1) - 1) + 1, ))  # usample FIR coefficients
+        self.fir1 = np.zeros((sps * (len(fir1) - 1) + 1, ), dtype=fir1.dtype)  # usample FIR coefficients
         self.fir1[::sps] = fir1
         self.fir1 /= np.linalg.norm(self.fir1)  # ensure unit norm
-        self.fir2 = np.zeros((sps * (len(fir2) - 1) + 1, ))
+        self.fir2 = np.zeros((sps * (len(fir2) - 1) + 1, ), dtype=fir1.dtype)
         self.fir2[::sps] = fir2
         self.fir2 /= np.linalg.norm(self.fir2)  # ensure unit norm
 
@@ -232,7 +232,8 @@ class WienerHammersteinSystem(object):
         z = np.convolve(x, self.fir1, mode='same')
         z = self.nl(z)
         z = np.convolve(z, self.fir2, mode='same')
-        return (z - np.mean(z)) / np.std(z)
+        # return (z - np.mean(z)) / np.std(z)
+        return z
 
 
 class LowPassFilter(object):

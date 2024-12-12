@@ -9,3 +9,5 @@ pyarrow
 matplotlib
 pyqt5
 seaborn
+pytest
+numba

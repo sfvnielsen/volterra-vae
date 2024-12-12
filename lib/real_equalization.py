@@ -971,6 +971,8 @@ class VAEHammersteinForward(GenericTorchBlindProbabilisticEqualizer):
         self.channel_h.requires_grad = True
         self.alpha_1 = torch.scalar_tensor(1.0, requires_grad=True)
         self.alpha_2 = torch.scalar_tensor(0.0, requires_grad=True)
+        self.alpha_1.to(self.torch_device)
+        self.alpha_2.to(self.torch_device)
 
         # Equaliser model - method initialize_decoder to be implemented by each child of this class
         self.equaliser = self.initialize_equaliser(**equaliser_kwargs)

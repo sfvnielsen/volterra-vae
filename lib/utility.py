@@ -106,7 +106,7 @@ def calc_robust_ser(y_eq, a, angles=[0.0, np.pi / 2, np.pi, np.pi * 3 / 2], dela
     assert (y_eq.shape == a.shape)
     opt_delay = find_delay(y_eq, a)
     const = np.unique(a)
-    sers = np.empty((len(angles) + 1,))
+    sers = np.zeros_like(angles)
     for i, ang in enumerate(angles):
         ahat_rot = decision_logic(y_eq * np.exp(1j * ang), const, const)
         sers[i] = calc_ser(ahat_rot[discard:-discard], np.roll(a, opt_delay)[discard:-discard])
