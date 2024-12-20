@@ -7,6 +7,8 @@ from scipy.special import comb
 from lib.utility import calculate_mmse_weights
 
 
+# TODO: Go through and rename the VAE nomenclature (away from encoder/decoder...)
+
 class Passthrough(object):
     def __init__(self, samples_per_symbol) -> None:
         self.samples_per_symbol = samples_per_symbol
