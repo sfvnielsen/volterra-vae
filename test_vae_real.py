@@ -4,8 +4,9 @@ import numpy as np
 import torch
 
 from lib.data_generation import PulseShapedAWGN
-from lib.real_equalization import LinearVAE, LMSPilot
+from lib.real_equalization import LinearVAE, LMSPilot, ConvolutionalNNPilot
 from lib.utility import calc_ser_pam, calc_theory_ser_pam
+
 
 if __name__ == "__main__":
     # Parameters to be used
@@ -14,7 +15,7 @@ if __name__ == "__main__":
     samples_per_symbol_out = 2
     seed = 124545
     snr_db = 12.0
-    N_symbols = int(1e6)
+    N_symbols = int(2.5e6)
     N_symbols_val = int(1e6)  # number of symbols used for SER calculation
 
     # Artificial transfer function of the channel
@@ -72,20 +73,32 @@ if __name__ == "__main__":
     __ = lms.fit(rx, syms)
     y_eq_lms = lms.apply(rx_val)
 
-    # Make "constellation plot" - noisy symbol + equalized symbol
-    fig, ax = plt.subplots()
-    ax.hist(rx[::samples_per_symbol_out], bins=100, label="Noisy symbols")
-    ax.hist(y_eq, bins=100, label="VAE")
-    ax.hist(y_eq_lms, bins=100, label="LMSPilot")
-    ax.legend()
+    # Compare to CNN with pilots
+    cnn = ConvolutionalNNPilot(n_lags=45, n_hidden_units=5, n_hidden_layers=5, learning_rate=1e-3, samples_per_symbol=samples_per_symbol_out,
+                               batch_size=1000)
+    cnn.initialize_optimizer()
+    __ = cnn.fit(rx, syms)
+    y_eq_cnn = cnn.apply(rx_val)
 
-    # Calculate error metrics - Symbol Error Rate (SER)
-    ser_vae, __ = calc_ser_pam(y_eq, syms_val)
-    ser_lms, __ = calc_ser_pam(y_eq_lms, syms_val)
-    ser_no_eq, __ = calc_ser_pam(rx[::samples_per_symbol_out], syms_val)
-    ser_theo = calc_theory_ser_pam(constellation_order=order, EsN0_db=EsN0_db)
+    # Loop, calculate SER and plot constellation.
+    eqdict = {
+        "Noisy symbols": rx[::samples_per_symbol_out],
+        "VAE": y_eq,
+        "Linear FFE": y_eq_lms,
+        "CNN": y_eq_cnn
+    }
+    
+    ncols = 2
+    fig, ax = plt.subplots(ncols=ncols, nrows=int(np.ceil(len(eqdict)/ncols)))
+    ax = ax.flatten()
 
-    for ser, method in zip([ser_vae, ser_lms, ser_no_eq, ser_theo], ["VAE", "LMS", "No eq", "Theory"]):
-        print(f"{method}: {ser:.3e} (SER)")
+    for e, (elabel, esig) in enumerate(eqdict.items()):
+        # Make "constellation plot"
+        ax[e].hist(esig, bins=100)
+
+        # Calculate error metrics - Symbol Error Rate (SER)
+        this_ser, __ = calc_ser_pam(esig, syms_val)
+
+        ax[e].set_title(f"{elabel}: {this_ser:.3e}")
 
     plt.show()

@@ -6,7 +6,7 @@ import torch
 import torchaudio.functional as taf
 from scipy.special import comb
 
-from .torch_components import SecondOrderVolterraSeries, WienerHammersteinNN
+from .torch_components import SecondOrderVolterraSeries, WienerHammersteinNN, CNN
 from .utility import calculate_mmse_weights
 
 
@@ -389,6 +389,49 @@ class WienerHammersteinNNPilot(GenericTorchPilotEqualizer):
 
     def __repr__(self) -> str:
         return f"WienerHammersteinNNPilot"
+
+
+class ConvolutionalNNPilot(GenericTorchPilotEqualizer):
+    """
+        CNN equaliser (with FC feed-forward NN)
+    """
+    def __init__(self, n_lags, n_hidden_units, n_hidden_layers, learning_rate,
+                 samples_per_symbol, batch_size, dtype=torch.float32, torch_device=torch.device("cpu"),
+                 lr_schedule='step') -> None:
+        super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, lr_schedule)
+
+        # Initialize CNN
+        self.equaliser = CNN(n_lags=n_lags, n_hidden_units=n_hidden_units, n_hidden_layers=n_hidden_layers,
+                             samples_per_symbol=samples_per_symbol,
+                             dtype=dtype, torch_device=torch_device)
+        
+        self.discard_samples = n_lags // 2
+
+    def get_parameters(self):
+        return self.equaliser.parameters()
+    
+    def _update_model(self, loss):
+        loss.backward()
+        self.optimizer.step()
+        self.equaliser.zero_grad()
+
+    def forward(self, y):
+        return self.equaliser.forward(y)
+
+    def _calculate_loss(self, xhat, y, syms):
+        return torch.mean(torch.square(xhat[self.discard_samples:-self.discard_samples] - syms[self.discard_samples:-self.discard_samples]))
+
+    def print_model_parameters(self):
+        pass
+
+    def train_mode(self):
+        self.equaliser.requires_grad_(True)
+
+    def eval_mode(self):
+        self.equaliser.requires_grad_(False)
+
+    def __repr__(self) -> str:
+        return f"CNNPilot"
 
 
 class GenericTorchBlindEqualizer(object):
