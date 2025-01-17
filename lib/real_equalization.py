@@ -839,10 +839,10 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
                                            2 * torch.einsum('i,ji->ij', self.channel_h1, H) + torch.einsum('j,ii->ij', self.channel_h1, H)))
         x3_sum = torch.sum(taf.convolve(ex3 - 3 * ex2 * ex + 2*ex**3, self.channel_h1 * torch.diag(H), mode='valid'))
 
-        e_xhxHx =  torch.sum(torch.einsum('ni,nj,nk->ijk', ex_lag, ex_lag, ex_lag) * torch.einsum('i,jk->ijk', self.channel_h1, H)) + x2x_sum + x3_sum
+        e_xhxHx =  torch.sum(torch.einsum('ni,i->n', ex_lag, self.channel_h1) * torch.einsum('ni,nj,ij->n', ex_lag, ex_lag, H)) + x2x_sum + x3_sum
 
         # E[( x H x ^ 2)]  - expectation of H applied to x squared
-        xxxx_sum = torch.sum(torch.einsum('ni,nj,nk,nl->ijkl', ex_lag, ex_lag, ex_lag, ex_lag) * torch.einsum('ij,kl->ijkl', H, H))
+        xxxx_sum = torch.sum(torch.einsum('ni,nj,ij->n', ex_lag, ex_lag, H)**2)
 
         ex2exex = torch.einsum('ni,nj,nk->ijk', ex2_lag, ex_lag, ex_lag)
         exsqexex = torch.einsum('ni,nj,nk->ijk', ex_lag**2, ex_lag, ex_lag)

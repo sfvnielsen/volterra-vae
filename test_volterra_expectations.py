@@ -263,7 +263,7 @@ if __name__ == "__main__":
         
         x3_sum = np.sum(np.convolve(ex3 - 3 * ex2 * ex + 2*ex**3, h * np.diag(H), mode='valid'))
 
-        derived =  np.sum(np.einsum('ni,nj,nk->ijk', ex_lag, ex_lag, ex_lag) * np.einsum('i,jk->ijk', h, H)) + x2x_sum + x3_sum
+        derived = np.sum(np.einsum('ni,i->n', ex_lag, h) * np.einsum('ni,nj,ij->n', ex_lag, ex_lag, H)) + x2x_sum + x3_sum
 
         print(f"Theoretial expectation: {derived}")
 
@@ -309,8 +309,9 @@ if __name__ == "__main__":
         ex2_lag = toeplitz(ex2, np.zeros(KERNEL_MEMORY, ))[(KERNEL_MEMORY-1):]
         ex3_lag = toeplitz(ex3, np.zeros(KERNEL_MEMORY, ))[(KERNEL_MEMORY-1):]
 
-        xxxx_sum = np.sum(np.einsum('ni,nj,nk,nl->ijkl', ex_lag, ex_lag, ex_lag, ex_lag) * np.einsum('ij,kl->ijkl', H, H))
+        xxxx_sum = np.sum(np.einsum('ni,nj,ij->n', ex_lag, ex_lag, H)**2)
 
+        # FIXME: Below can be simplfied to a term that scales O(L^2)
         ex2exex = np.einsum('ni,nj,nk->ijk', ex2_lag, ex_lag, ex_lag)
         exsqexex = np.einsum('ni,nj,nk->ijk', ex_lag**2, ex_lag, ex_lag)
         if symmetric_second_order_kernel:
