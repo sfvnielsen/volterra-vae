@@ -744,7 +744,7 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
     """
     def __init__(self, channel_memory, learning_rate, constellation: np.ndarray,
                  samples_per_symbol, batch_size, dtype=torch.float32, noise_variance=1.0,
-                 adaptive_noise_variance=True,
+                 adaptive_noise_variance=True, noise_scaling=True,
                  torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
         super().__init__(samples_per_symbol, batch_size, learning_rate, dtype, torch_device, lr_schedule)
 
@@ -779,7 +779,8 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
 
         # Define noise scaling pr. symbol
         self.noise_scaling = torch.ones_like(self.constellation)
-        self.noise_scaling.requires_grad = True
+        self.learnable_noise_scaling = noise_scaling
+        self.noise_scaling.requires_grad = True if self.learnable_noise_scaling else False
 
         # Define constellation prior
         # FIXME: Currently uniform - change in accordance to (Lauinger, 2022) (PCS)
@@ -792,10 +793,15 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
         self.epsilon = 1e-12
 
     def get_parameters(self):
-        return [{'params': self.channel_h1, 'name': 'channel_h1'},
-                {'params': self.channel_h2, "lr": self.learning_rate_second_order, 'name': 'channel_h2'},
-                {'params': self.equaliser.parameters(), 'name': 'equaliser'},
-                {'params': self.noise_scaling, 'name': 'noise_scale'}]
+        params = [{'params': self.channel_h1, 'name': 'channel_h1'},
+                  {'params': self.channel_h2, "lr": self.learning_rate_second_order, 'name': 'channel_h2'},
+                  {'params': self.equaliser.parameters(), 'name': 'equaliser'}
+                ]
+
+        if self.learnable_noise_scaling:
+            params += [{'params': self.noise_scaling, 'name': 'noise_scale'}]
+
+        return params
 
     def initialize_equaliser(self, **equaliser_kwargs) -> torch.nn.Module:
         # weak implementation
@@ -929,15 +935,19 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
         self.channel_h1.grad = None
         self.channel_h2.grad = None
         self.equaliser.zero_grad()
+        if self.learnable_noise_scaling:
+            self.noise_scaling.grad = None
 
     def print_model_parameters(self):
         # Print convolutional kernels
-        print(f"Equaliser: {self.equaliser.weight}")
+        print(f"Equaliser: {self.equaliser}")
         print(f"Channel (1st order): {self.channel_h1}")
         print(f"Channel (2nd order): {self.channel_h2}")
 
-        # Print noise variance
+        # Print noise variance and scaling
         print(f"Noise variance: {self.noise_variance}")
+        if self.learnable_noise_scaling:
+            print(f"Noise scaling: {self.noise_scaling}")
 
     def train_mode(self):
         self.channel_h1.requires_grad = True
@@ -952,9 +962,13 @@ class VAESecondVolterraForward(GenericTorchBlindProbabilisticEqualizer):
 
 class LinearV2VAE(VAESecondVolterraForward):
     def __init__(self, channel_memory, learning_rate, constellation: np.ndarray, samples_per_symbol,
-                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
-        super().__init__(channel_memory, learning_rate, constellation, samples_per_symbol,
-                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, lr_schedule, **equaliser_kwargs)
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True,
+                 torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
+        super().__init__(channel_memory=channel_memory, learning_rate=learning_rate, constellation=constellation,
+                         samples_per_symbol=samples_per_symbol, batch_size=batch_size, dtype=dtype,
+                         noise_variance=noise_variance, adaptive_noise_variance=adaptive_noise_variance,
+                         noise_scaling=True, torch_device=torch_device, lr_schedule=lr_schedule,
+                         **equaliser_kwargs)
 
     def initialize_equaliser(self, **equaliser_kwargs):
         # Equaliser FIR filter -  n_taps (padded with zeros)
@@ -975,9 +989,13 @@ class LinearV2VAE(VAESecondVolterraForward):
 
 class SecondVolterraV2VAE(VAESecondVolterraForward):
     def __init__(self, channel_memory, learning_rate, constellation: np.ndarray, samples_per_symbol,
-                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True, torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
-        super().__init__(channel_memory, learning_rate, constellation, samples_per_symbol,
-                         batch_size, dtype, noise_variance, adaptive_noise_variance, torch_device, lr_schedule, **equaliser_kwargs)
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True,
+                 torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
+        super().__init__(channel_memory=channel_memory, learning_rate=learning_rate, constellation=constellation,
+                         samples_per_symbol=samples_per_symbol, batch_size=batch_size, dtype=dtype,
+                         noise_variance=noise_variance, adaptive_noise_variance=adaptive_noise_variance,
+                         noise_scaling=True, torch_device=torch_device, lr_schedule=lr_schedule,
+                         **equaliser_kwargs)
 
     def initialize_equaliser(self, **equaliser_kwargs):
         # Equalizer is a second order Volterra model
@@ -993,6 +1011,32 @@ class SecondVolterraV2VAE(VAESecondVolterraForward):
 
     def __repr__(self) -> str:
         return "SecondVolterraV2VAE"
+
+
+class SecondVolterraV2VAENoNoiseScaling(VAESecondVolterraForward):
+    def __init__(self, channel_memory, learning_rate, constellation: np.ndarray, samples_per_symbol,
+                 batch_size, dtype=torch.float32, noise_variance=1, adaptive_noise_variance=True,
+                 torch_device=torch.device('cpu'), lr_schedule='step', **equaliser_kwargs) -> None:
+        super().__init__(channel_memory=channel_memory, learning_rate=learning_rate, constellation=constellation,
+                         samples_per_symbol=samples_per_symbol, batch_size=batch_size, dtype=dtype,
+                         noise_variance=noise_variance, adaptive_noise_variance=adaptive_noise_variance,
+                         noise_scaling=False, torch_device=torch_device, lr_schedule=lr_schedule,
+                         **equaliser_kwargs)
+
+    def initialize_equaliser(self, **equaliser_kwargs):
+        # Equalizer is a second order Volterra model
+        equaliser = SecondOrderVolterraSeries(n_lags1=equaliser_kwargs['equaliser_n_lags1'],
+                                              n_lags2=equaliser_kwargs['equaliser_n_lags2'],
+                                              samples_per_symbol=self.samples_per_symbol,
+                                              dtype=self.dtype, torch_device=self.torch_device)
+        return equaliser
+
+    def forward(self, y):
+        y_eq = self.equaliser.forward(y)
+        return y_eq
+
+    def __repr__(self) -> str:
+        return "SecondVolterraV2VAE(Beta=1.0)"
 
 
 class VAEHammersteinForward(GenericTorchBlindProbabilisticEqualizer):
