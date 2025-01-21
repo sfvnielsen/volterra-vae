@@ -208,12 +208,18 @@ class WienerHammersteinSystem(object):
         Wiener-Hammerstein model consists of two FIR filters with a non-linearity sandwiched in-between.
         We use a third order polynomial as the non-linearity by default.
     """
-    def __init__(self, fir1, fir2, sps, nl_type='poly', **nl_config) -> None:
+    def __init__(self, fir1, fir2, sps, nl_type='poly', apply_interpolation=True, **nl_config) -> None:
         self.fir1 = np.zeros((sps * (len(fir1) - 1) + 1, ))  # usample FIR coefficients
         self.fir1[::sps] = fir1
+        if apply_interpolation:
+            interp_h = firwin(sps-1, 1/sps)  # construct low-pass filter
+            self.fir1 = lfilter(interp_h, 1, self.fir1)
         self.fir1 /= np.linalg.norm(self.fir1)  # ensure unit norm
+        
         self.fir2 = np.zeros((sps * (len(fir2) - 1) + 1, ))
         self.fir2[::sps] = fir2
+        if apply_interpolation:
+            self.fir2 = lfilter(interp_h, 1, self.fir2)
         self.fir2 /= np.linalg.norm(self.fir2)  # ensure unit norm
 
         # Determine what non-linearity that should be used in the middle
