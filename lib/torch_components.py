@@ -171,7 +171,7 @@ class CNN(torch.nn.Module):
                                    padding=n_lags // 2, dtype=dtype, device=torch_device, stride=self.sps)
         
         # Initialize batch normalization layer (after CNN)
-        self.bn = torch.nn.BatchNorm1d(num_features=n_hidden_units)
+        self.bn = torch.nn.BatchNorm1d(num_features=n_hidden_units, device=torch_device)
 
         # Initialize the fully-connected NN
         self.hidden_layers = torch.nn.ModuleList([create_linear_layer(n_hidden_units, dropout).to(dtype).to(self.torch_device) for __ in range(n_hidden_layers)])
