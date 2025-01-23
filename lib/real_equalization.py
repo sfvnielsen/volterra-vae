@@ -158,7 +158,7 @@ class GenericTorchPilotEqualizer(object):
         self.batch_size = batch_size
         self.torch_device = torch_device
         self.dtype = dtype
-        self.loss_print_interval = 250  # FIXME: Make part of constructor
+        self.loss_print_interval = 100
         self.optimizer = None
         self.learning_rate = learning_rate
         self.lr_schedule = lr_schedule
@@ -196,7 +196,7 @@ class GenericTorchPilotEqualizer(object):
         # Learning rate scheduler (step lr - learning rate is changed every step)
         if self.lr_schedule:
             steps = 10
-            reduction = 0.1
+            reduction = 0.01
             gamma = np.exp(np.log(reduction) / steps)
             lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
         loss_curve = np.zeros((n_batches, ))
@@ -478,7 +478,7 @@ class GenericTorchBlindEqualizer(object):
         # Learning rate scheduler (step lr - learning rate is changed every step)
         if self.lr_schedule:
             steps = 10
-            reduction = 0.1
+            reduction = 0.01
             gamma = np.exp(np.log(reduction) / steps)
             lr_schedule = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=n_batches//steps, gamma=gamma)
         loss_curve = np.zeros((n_batches, ))
