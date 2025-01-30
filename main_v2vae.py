@@ -1,3 +1,8 @@
+"""
+    Main script for fitting (blind) equalizers to a non-linear
+    Wiener-Hammestein channel (with polynomial non-linearity)
+"""
+
 import time
 import komm
 import matplotlib.pyplot as plt
