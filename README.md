@@ -33,4 +33,6 @@ The work carried out in this repository is part of a research project [MAchine l
 
 [3] S. F. Nielsen, D. Zibar, and M. N. Schmidt, “Blind Equalization using a Variational Autoencoder with Second Order Volterra Channel Model,” Oct. 21, 2024, arXiv: arXiv:2410.16125. doi: 10.48550/arXiv.2410.16125.
 
+[4] J. Song et al., “Blind Channel Equalization Using Vector-Quantized Variational Autoencoders,” Feb. 22, 2023, arXiv: arXiv:2302.11687. doi: 10.48550/arXiv.2302.11687.
+
 Code for [2]: https://github.com/kit-cel/vae-equalizer

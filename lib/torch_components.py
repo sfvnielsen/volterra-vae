@@ -10,6 +10,24 @@ import torch.nn.functional as F
 from torch.nn import Linear, ReLU, Sequential, BatchNorm1d, Dropout
 
 
+class StraightThroughArgMin(torch.autograd.Function):
+    """ ArgMin operator with straight-through gradient estimation
+    """
+    @staticmethod
+    def forward(ctx, input_array):
+        # input_array is an array of size [N x C]
+        # return an output mask of same size
+        idx = torch.argmin(input_array, dim=-1)[:, None]
+        output = torch.zeros_like(input_array)
+        output.scatter_(1, idx, 1)
+        return output
+    
+    @staticmethod
+    def backward(ctx, *grad_outputs):
+        # pass gradients straight through
+        return grad_outputs
+
+
 class FIRfilter(torch.nn.Module):
     def __init__(self, filter_length, stride=1, trainable=True, dtype=torch.float64, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -28,6 +46,9 @@ class FIRfilter(torch.nn.Module):
         f_out = F.conv1d(xpadded, torch.flip(self.weights, (0,))[None, None, :],
                         stride=self.stride).squeeze_()
         return f_out
+    
+    def print_parameters(self):
+        print(self.weights)
 
 class SecondOrderVolterraSeries(torch.nn.Module):
     """
@@ -73,6 +94,13 @@ class SecondOrderVolterraSeries(torch.nn.Module):
         y2 = torch.einsum('ijk,jk->i', Xouter, self.kernel2 + self.kernel2.T)
 
         return y + y2
+
+    def print_parameters(self):
+        print("Kernel 1:")
+        print(self.kernel1)
+
+        print("Kernel 2:")
+        print(self.kernel2)
 
 
 def universal_nonlinear_unit(hidden_size, n_layers, dropout_rate=0.1):
